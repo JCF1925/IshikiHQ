@@ -1,0 +1,36 @@
+{
+  "name": "workspace",
+  "version": "0.0.0",
+  "license": "MIT",
+  "scripts": {
+    "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
+    "build": "pnpm run typecheck && pnpm -r --if-present run build",
+    "task-priority:check": "pnpm --filter @workspace/scripts run task-priority:check",
+    "task-priority:ingest": "pnpm --filter @workspace/scripts exec tsx ./src/task-priority-register.ts ingest",
+    "task-priority:refresh": "pnpm --filter @workspace/scripts run task-priority:refresh",
+    "typecheck:libs": "tsc --build",
+    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
+  },
+  "private": true,
+  "dependencies": {
+    "@replit/connectors-sdk": "^0.4.1"
+  },
+  "devDependencies": {
+    "prettier": "^3.9.6",
+    "typescript": "~5.9.3"
+  },
+  "pnpm": {
+    "overrides": {
+      "esbuild@<=0.24.2": "0.25.12",
+      "esbuild@>=0.27.3 <0.28.1": "0.28.1",
+      "decode-uri-component@0.2.2": "file:patches/decode-uri-component",
+      "fast-uri": "3.1.6",
+      "js-cookie": "3.0.7",
+      "js-yaml@^4.0.0": "4.3.2",
+      "lodash": "4.18.0",
+      "nanoid@^3.0.0": "3.3.18",
+      "qs": "6.16.0",
+      "uuid@7.0.3": "11.1.1"
+    }
+  }
+}

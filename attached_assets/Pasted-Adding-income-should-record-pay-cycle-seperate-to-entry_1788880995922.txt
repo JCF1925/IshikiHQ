@@ -1,0 +1,13 @@
+Adding income should record pay cycle seperate to entry of annual package, first pay day should set the cycle. Upon creation fortnight’s are entered till the end date or add to ongoing monthly roll over. Then can add salary package to certain weeks (leave packaging is spread over 26 fortnight nights). Fortnightly pay confirmation (including salary packaging reminbursments which are seperate transactions). Confirmed gross value with transactions. Give users options to keep detailed history. Possible leave tracking to combine with the work from home diary. Possibly a timesheet you can put your regular work pattern or rosters for casual jobs, then part of week/fortnightly confirmation confirm work/leave/location.
+
+For health, set up appointment times/fees/medicare number by practice (note some practices there’s different fees for same speciality. Then in appointment booking form list common appointments by practioner. 
+
+For each practitioner id like to be able to assign symptoms to discuss plus add other notes outside symptoms. After each appointment task to check off things discussed and note payment, follow ups, referrals, pathology requests, medication changes.
+
+during each appointment I would like to have a view of medications prescribed by that practice with script details (forecast script consumption based on schedule, note PRN use and script/stock. Symptoms and notes assigned to doctor/practice. 
+
+Add debt with friends, transaction splitting, debt tracking and option interest (dates applicable, monthly calculation with confirmation). Also include debt shared with housemates. Housemates for shared expenses should be associated with debt with friends category. Ability to allocate transactions to house account or shared expenses. Email/upload reciept tracking, start with expense tracking and then maybe inventory tracking. 
+
+For medications assign a ‘usual pharmacy,’ set up one pharmacy order per fortnight per pharmacy, when schedule is set allocate the refill interval with orders in the relevant fortnight. At start of each fortnight create task for medications that need be ordered in the next week.
+
+add referrals to doctors, some are valid for 6/12 months or indefinite. Must come from other doctors, set up reminders to renew if doctor relationship still active. Practitioners should have a referral required flag. If flag and no referral then no Medicare rebate payable. Some referrals have service limits over 12 months eg 10 sessions per 12 months or calendar year) track usage.

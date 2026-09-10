@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "Ishiki",
+    "slug": "syntropic-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "syntropic-mobile",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": false,
+      "entitlements": { "com.apple.developer.healthkit": true },
+      "infoPlist": {
+        "NSCameraUsageDescription": "Ishiki uses the camera only when you choose to attach a receipt or record.",
+        "NSHealthShareUsageDescription": "Ishiki reads only the Apple Health types you select to show personal trends.",
+        "NSHealthUpdateUsageDescription": "Ishiki writes one synthetic activity sample only during the development HealthKit smoke test, then removes it."
+      }
+    },
+    "android": {},
+    "web": {
+      "favicon": "./assets/images/icon.png"
+    },
+    "plugins": [
+      "expo-router",
+      ["expo-image-picker", { "cameraPermission": "Allow Ishiki to attach a photo you choose to capture.", "photosPermission": "Allow Ishiki to attach a photo you choose." }],
+      "expo-local-authentication",
+      "expo-notifications",
+      "expo-secure-store"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    }
+  }
+}

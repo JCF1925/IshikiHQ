@@ -1,0 +1,7 @@
+{
+  "name": "syntropic-healthkit",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "peerDependencies": { "expo-modules-core": "*" }
+}

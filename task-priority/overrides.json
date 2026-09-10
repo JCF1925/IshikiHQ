@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "tasks": {
+    "#239": {
+      "priority": "high",
+      "size": "M",
+      "release": "R1",
+      "rationale": "The register is required to sequence the remaining work into safe, testable releases.",
+      "note": "Initial manual override; user explicitly requested version-based planning."
+    }
+  }
+}

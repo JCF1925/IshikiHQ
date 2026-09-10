@@ -1,0 +1,27 @@
+kind = "web"
+previewPath = "/"
+title = "Ishiki Personal Operating System"
+description = "A private, Australian-first personal operating system for finances, health, commitments, goals, events, study, work, and future household coordination."
+version = "1.0.0"
+id = "artifacts/syntropic"
+router = "path"
+
+[[services]]
+name = "web"
+paths = ["/", "/api"]
+localPort = 18087
+
+[services.development]
+run = "pnpm --filter @workspace/syntropic run dev"
+
+[services.production]
+build = ["pnpm", "--filter", "@workspace/syntropic", "run", "build"]
+
+[services.production.run]
+args = ["pnpm", "--filter", "@workspace/syntropic", "run", "start"]
+
+[services.env]
+PORT = "18087"
+BASE_PATH = "/"
+[services.web.production.health.startup]
+path = "/login"

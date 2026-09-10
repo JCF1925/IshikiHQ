@@ -1,0 +1,46 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "N86pqgUqIlaoEd_WPnvrT"
+uri = "file://.local/conversation-workspace/files/Syntropic_Implementation_Audit.md"
+type = "text"
+title = "Syntropic Implementation Audit"
+description = "A code-to-roadmap audit covering phase accuracy, critical risks, build readiness, and recommended remediation order."
+logical_id = "30c13401-74a3-47ca-9bce-d837e922d7a9"
+content_hash = "sha256:46a5c156b5ae7785eb6fe22db1cdbbbd0c0368ff64d7cd1fe9dbc29eae359fd2"
+size = 13005
+mtime_ms = 1788787984287
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/conversation:21bc7c5b-0f8f-4648-9ce4-5bb9e99d7d9b/30c13401-74a3-47ca-9bce-d837e922d7a9/6215ba13-49a0-48b8-a871-2ca442c36c3a"
+storage_version_token = "1788787985118698"
+content_type = "text/markdown"
+source_uri = "file://Syntropic_Implementation_Audit.md"
+
+[[outputs]]
+id = "aSQnKQOPJsRVn3Fm61mBm"
+uri = "file://.local/conversation-workspace/files/Syntropic_Roadmap_Completion_Requirements.md"
+type = "text"
+title = "Final Syntropic Roadmap Completion Requirements"
+description = "Updated requirements baseline naming Redbark as the initial Australian bank-feed provider and defining consent, import, reconciliation, webhook, and retention requirements."
+logical_id = "45e008e8-d16f-47eb-8f86-94c77e517ec6"
+content_hash = "sha256:927f812b13f4cec552b1de9aacfac13ef8b1cfc54a682e05cd138bd59daf5f1a"
+size = 30737
+mtime_ms = 1788789050060
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/conversation:21bc7c5b-0f8f-4648-9ce4-5bb9e99d7d9b/45e008e8-d16f-47eb-8f86-94c77e517ec6/fd817470-2542-4acc-be78-bf8200ac3c45"
+storage_version_token = "1788789054581606"
+content_type = "text/markdown"
+source_uri = "file://Syntropic_Roadmap_Completion_Requirements.md"
+
+[[outputs]]
+id = "IjMXTfulHswNLyL4hvUiI"
+uri = "file://artifacts/syntropic/docs/ishiki-module-feature-inventory.csv"
+type = "table"
+title = "Ishiki module feature inventory"
+description = "A validated CSV inventory of Ishiki modules, submodules, user-facing features, web routes, mobile workflows, and supporting API capabilities."
+logical_id = "9674a268-7198-4eee-9b03-316f21f03855"
+content_hash = "sha256:a6fe17e69925a46279665b7f53fe13dfb7924e724a6d9121fa9059368460b240"
+size = 10796
+mtime_ms = 1789003399820
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:ffaa55fe-66fd-4010-9f05-ebf8c2d1b3fa/9674a268-7198-4eee-9b03-316f21f03855/08edb60c-2469-425c-8dee-22a51607bd2b"
+storage_version_token = "1789003486955218"
+content_type = "text/csv"

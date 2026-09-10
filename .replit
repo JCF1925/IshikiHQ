@@ -1,0 +1,31 @@
+modules = ["nodejs-24", "postgresql-16", "python-base-3.13"]
+
+[deployment]
+router = "application"
+deploymentTarget = "autoscale"
+
+[deployment.postBuild]
+args = ["sh", "-c", "pnpm store prune && pnpm --filter @workspace/syntropic run release:smoke"]
+env = { "CI" = "true" }
+
+[workflows]
+runButton = "Project"
+
+[agent]
+stack = "PNPM_WORKSPACE"
+expertMode = true
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 120000
+
+[nix]
+channel = "stable-25_05"
+packages = ["tesseract"]
+
+[userenv]
+
+[userenv.development]
+FEEDBACK_GOOGLE_SPREADSHEET_ID = "1N_DQhQME0r0baq6RJQhaTIk-Oj4eJriO6k1mQdTS79k"
+AUTH_URL = "https://ffaa55fe-66fd-4010-9f05-ebf8c2d1b3fa-00-35o2eob1ssiix.reed.replit.dev"
+NEXTAUTH_URL = "https://ffaa55fe-66fd-4010-9f05-ebf8c2d1b3fa-00-35o2eob1ssiix.reed.replit.dev"

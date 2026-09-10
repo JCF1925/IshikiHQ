@@ -1,0 +1,14 @@
+{
+  "name": "decode-uri-component",
+  "version": "0.5.0",
+  "description": "CommonJS-compatible security backport of decode-uri-component 0.5.0",
+  "license": "MIT",
+  "main": "index.js",
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test test.js"
+  },
+  "engines": {
+    "node": ">=14.16"
+  }
+}

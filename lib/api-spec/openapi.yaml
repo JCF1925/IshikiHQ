@@ -1,0 +1,783 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.2.0
+  description: Shared API, including the offline-first Syntropic Mobile contract.
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - { name: health, description: Service health }
+  - { name: mobile, description: Syntropic Mobile }
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      security: []
+      responses:
+        "200":
+          description: Healthy
+          content: { application/json: { schema: { $ref: "#/components/schemas/HealthStatus" } } }
+  /mobile/auth/device-sessions:
+    post:
+      operationId: createMobileDeviceSession
+      tags: [mobile]
+      summary: Exchange an upstream authenticated user context for a device session
+      security: []
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/MobileDeviceSessionInput" } } }
+      responses:
+        "201": { description: Session created, content: { application/json: { schema: { $ref: "#/components/schemas/MobileSession" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      operationId: revokeMobileDeviceSession
+      tags: [mobile]
+      responses:
+        "204": { description: Revoked }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /mobile/dashboard:
+    get:
+      operationId: getMobileDashboard
+      tags: [mobile]
+      responses:
+        "200": { description: Dashboard, content: { application/json: { schema: { $ref: "#/components/schemas/MobileDashboard" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /mobile/capture/transactions:
+    post:
+      operationId: captureMobileTransaction
+      tags: [mobile]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/MobileTransactionInput" } } } }
+      responses:
+        "201": { description: Captured, content: { application/json: { schema: { $ref: "#/components/schemas/MobileMutationResult" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /mobile/capture/tasks:
+    post:
+      operationId: captureMobileTask
+      tags: [mobile]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/MobileTaskInput" } } } }
+      responses:
+        "201": { description: Captured, content: { application/json: { schema: { $ref: "#/components/schemas/MobileMutationResult" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /mobile/capture/vitals:
+    post:
+      operationId: captureMobileVital
+      tags: [mobile]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/MobileVitalInput" } } } }
+      responses:
+        "201": { description: Captured, content: { application/json: { schema: { $ref: "#/components/schemas/MobileMutationResult" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /mobile/medication-doses:
+    post:
+      operationId: recordMobileMedicationDose
+      tags: [mobile]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/MobileMedicationDoseInput" } } } }
+      responses:
+        "201": { description: Dose recorded, content: { application/json: { schema: { $ref: "#/components/schemas/MobileMutationResult" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /mobile/events:
+    post:
+      operationId: createMobileEvent
+      tags: [mobile]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/MobileEventInput" } } } }
+      responses:
+        "201": { description: Event created, content: { application/json: { schema: { $ref: "#/components/schemas/MobileMutationResult" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /mobile/sync/push:
+    post:
+      operationId: pushMobileSync
+      tags: [mobile]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/MobileSyncPushInput" } } } }
+      responses:
+        "200": { description: Per-change results, content: { application/json: { schema: { $ref: "#/components/schemas/MobileSyncPushResult" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /mobile/sync/restore:
+    post:
+      operationId: restoreMobileCapture
+      tags: [mobile]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/MobileRestoreCaptureInput" } } } }
+      responses:
+        "200": { description: Restored capture, content: { application/json: { schema: { $ref: "#/components/schemas/MobileRestoreCaptureResult" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /mobile/sync/pull:
+    get:
+      operationId: pullMobileSync
+      tags: [mobile]
+      parameters:
+        - in: query
+          name: cursor
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        "200": { description: Changes after cursor, content: { application/json: { schema: { $ref: "#/components/schemas/MobileSyncPullResult" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /mobile/sync/history:
+    get:
+      operationId: getMobileSyncHistory
+      tags: [mobile]
+      responses:
+        "200": { description: Safe sync outcome history, content: { application/json: { schema: { $ref: "#/components/schemas/MobileSyncHistoryResult" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /mobile/uploads:
+    post:
+      operationId: initiateMobileUpload
+      tags: [mobile]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/MobileUploadInput" } } } }
+      responses:
+        "201": { description: Upload initiated, content: { application/json: { schema: { $ref: "#/components/schemas/MobileUpload" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /mobile/uploads/{uploadId}/complete:
+    post:
+      operationId: completeMobileUpload
+      tags: [mobile]
+      parameters:
+        - { $ref: "#/components/parameters/UploadId" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/MobileUploadCompletion" } } } }
+      responses:
+        "200": { description: Upload completed, content: { application/json: { schema: { $ref: "#/components/schemas/MobileUpload" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /mobile/uploads/{uploadId}/content:
+    put:
+      operationId: uploadMobileUploadContent
+      tags: [mobile]
+      parameters: [{ $ref: "#/components/parameters/UploadId" }]
+      requestBody:
+        required: true
+        content:
+          application/octet-stream: { schema: { type: string, format: binary } }
+          image/jpeg: { schema: { type: string, format: binary } }
+          image/png: { schema: { type: string, format: binary } }
+      responses:
+        "200": { description: Upload stored, content: { application/json: { schema: { $ref: "#/components/schemas/MobileUpload" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /mobile/push/devices:
+    post:
+      operationId: registerMobilePushDevice
+      tags: [mobile]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/MobilePushDeviceInput" } } } }
+      responses:
+        "200": { description: Registered, content: { application/json: { schema: { $ref: "#/components/schemas/MobileMutationResult" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /mobile/push/reminders:
+    get:
+      operationId: getMobilePushReminders
+      tags: [mobile]
+      responses:
+        "200": { description: Current reminder settings, content: { application/json: { schema: { $ref: "#/components/schemas/MobileReminderSettings" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      operationId: updateMobilePushReminders
+      tags: [mobile]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/MobileReminderSettingsInput" } } } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/MobileReminderSettings" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /mobile/medication-reminders:
+    get:
+      operationId: getMobileMedicationReminders
+      tags: [mobile]
+      responses:
+        "200": { description: The signed-in user's active medication schedules and this device's choices, content: { application/json: { schema: { $ref: "#/components/schemas/MobileMedicationReminders" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /mobile/medication-reminders/{scheduleId}:
+    put:
+      operationId: updateMobileMedicationReminder
+      tags: [mobile]
+      parameters:
+        - name: scheduleId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/MobileMedicationReminderInput" } } } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/MobileMedicationReminder" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /mobile/stock-levels:
+    get:
+      operationId: listMobileStockLevels
+      tags: [mobile]
+      responses:
+        "200": { description: Owner-scoped medication stock levels and ledger diagnostics, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/MobileStockLevel" } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      operationId: reconcileMobileStockLevel
+      tags: [mobile]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/MobileStockReconciliationInput" } } } }
+      responses:
+        "200": { description: Reconciled historical stock mismatch, content: { application/json: { schema: { $ref: "#/components/schemas/MobileStockReconciliationResult" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /mobile/apple-health/controls:
+    get:
+      operationId: getAppleHealthControls
+      tags: [mobile]
+      responses:
+        "200": { description: Read-only import controls, content: { application/json: { schema: { $ref: "#/components/schemas/AppleHealthControls" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      operationId: updateAppleHealthControls
+      tags: [mobile]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AppleHealthControlsInput" } } } }
+      responses:
+        "200": { description: Updated controls, content: { application/json: { schema: { $ref: "#/components/schemas/AppleHealthControls" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /mobile/apple-health/imported-copy-controls:
+    put:
+      operationId: updateAppleHealthImportedCopyControls
+      tags: [mobile]
+      summary: Set local-only controls; never writes to Apple Health
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AppleHealthImportedCopyControlsInput" } } } }
+      responses:
+        "200": { description: Updated local controls, content: { application/json: { schema: { $ref: "#/components/schemas/AppleHealthImportedCopyControls" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /mobile/apple-health/imported-copies:
+    delete:
+      operationId: deleteAppleHealthImportedCopies
+      tags: [mobile]
+      summary: Hide locally imported copies without modifying Apple Health
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AppleHealthImportedCopyDeletionInput" } } } }
+      responses:
+        "200": { description: Local tombstones created, content: { application/json: { schema: { $ref: "#/components/schemas/AppleHealthImportedCopyDeletionResult" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /mobile/apple-health/import-batches:
+    post:
+      operationId: importAppleHealthBatch
+      tags: [mobile]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AppleHealthImportInput" } } } }
+      responses:
+        "202": { description: Immutable import accepted, content: { application/json: { schema: { $ref: "#/components/schemas/AppleHealthImportResult" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /mobile/apple-health/anchors/{sampleType}:
+    get:
+      operationId: getAppleHealthAnchor
+      tags: [mobile]
+      parameters: [{ $ref: "#/components/parameters/SampleType" }]
+      responses:
+        "200": { description: Current anchor, content: { application/json: { schema: { $ref: "#/components/schemas/AppleHealthAnchor" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /mobile/anomalies:
+    get:
+      operationId: listMobileAnomalies
+      tags: [mobile]
+      parameters:
+        - in: query
+          name: status
+          schema: { type: string, enum: [pending, acknowledged, dismissed] }
+      responses:
+        "200": { description: Non-diagnostic observations, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/MobileAnomaly" } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /mobile/anomalies/{anomalyId}/review:
+    post:
+      operationId: reviewMobileAnomaly
+      tags: [mobile]
+      parameters: [{ $ref: "#/components/parameters/AnomalyId" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/MobileAnomalyReviewInput" } } } }
+      responses:
+        "200": { description: Reviewed, content: { application/json: { schema: { $ref: "#/components/schemas/MobileAnomaly" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: opaque }
+  parameters:
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: true
+      schema: { type: string, minLength: 8, maxLength: 200 }
+    UploadId: { in: path, name: uploadId, required: true, schema: { type: string } }
+    SampleType: { in: path, name: sampleType, required: true, schema: { type: string } }
+    AnomalyId: { in: path, name: anomalyId, required: true, schema: { type: string } }
+  responses:
+    BadRequest: { description: Invalid request, content: { application/json: { schema: { $ref: "#/components/schemas/ApiError" } } } }
+    Unauthorized: { description: Authentication required, content: { application/json: { schema: { $ref: "#/components/schemas/ApiError" } } } }
+    NotFound: { description: Resource not found, content: { application/json: { schema: { $ref: "#/components/schemas/ApiError" } } } }
+    Conflict: { description: Idempotency or version conflict, content: { application/json: { schema: { $ref: "#/components/schemas/ApiConflict" } } } }
+  schemas:
+    HealthStatus:
+      type: object
+      required: [status]
+      properties: { status: { type: string } }
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, requestId]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            requestId: { type: string }
+            details: {}
+    ApiConflict:
+      allOf:
+        - { $ref: "#/components/schemas/ApiError" }
+        - type: object
+          properties:
+            conflict:
+              type: object
+              required: [kind]
+              properties:
+                kind: { type: string, enum: [idempotency_key_reused, version_mismatch] }
+                serverVersion: { type: [integer, "null"] }
+                serverRecord: { type: [object, "null"], additionalProperties: true }
+    MobileDeviceSessionInput:
+      type: object
+      required: [email, password, installId, platform, deviceName]
+      properties:
+        email: { type: string, format: email, maxLength: 320 }
+        password: { type: string, minLength: 8, maxLength: 1024, writeOnly: true }
+        installId: { type: string, minLength: 8 }
+        platform: { type: string, enum: [ios, android] }
+        deviceName: { type: string, minLength: 1, maxLength: 120 }
+        appVersion: { type: string }
+        attestation: { type: string }
+    MobileSession:
+      type: object
+      required: [accessToken, expiresAt, deviceId]
+      properties:
+        accessToken: { type: string }
+        expiresAt: { type: string, format: date-time }
+        deviceId: { type: string }
+    MobileDashboard:
+      type: object
+      required: [generatedAt, tasksDue, medicationsDue, recentVitals, syncCursor]
+      properties:
+        generatedAt: { type: string, format: date-time }
+        tasksDue: { type: integer }
+        medicationsDue: { type: integer }
+        recentVitals: { type: integer }
+        syncCursor: { type: string }
+    MobileTransactionInput:
+      type: object
+      required: [clientId, amount, currency, occurredAt]
+      properties:
+        clientId: { type: string }
+        amount: { type: number }
+        currency: { type: string, minLength: 3, maxLength: 3 }
+        occurredAt: { type: string, format: date-time }
+        merchant: { type: string }
+        category: { type: string }
+        notes: { type: string }
+    MobileTaskInput:
+      type: object
+      required: [clientId, title]
+      properties:
+        clientId: { type: string }
+        title: { type: string, minLength: 1 }
+        dueAt: { type: [string, "null"], format: date-time }
+        priority: { type: string, enum: [low, medium, high, urgent] }
+        notes: { type: string }
+    MobileVitalInput:
+      type: object
+      required: [clientId, type, value, unit, measuredAt]
+      properties:
+        clientId: { type: string }
+        type: { type: string, minLength: 1 }
+        value: { type: number }
+        secondaryValue: { type: number }
+        unit: { type: string, minLength: 1 }
+        measuredAt: { type: string, format: date-time }
+        notes: { type: string }
+    MobileMedicationDoseInput:
+      type: object
+      required: [clientId, medicationId, takenAt, status]
+      properties:
+        clientId: { type: string }
+        medicationId: { type: string }
+        scheduleId: { type: string }
+        takenAt: { type: string, format: date-time }
+        status: { type: string, enum: [taken, skipped] }
+        dose: { type: string }
+        reason: { type: string }
+    MobileEventInput:
+      type: object
+      required: [clientId, title, startsAt]
+      properties:
+        clientId: { type: string }
+        title: { type: string, minLength: 1 }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: [string, "null"], format: date-time }
+        allDay: { type: boolean, default: false }
+        notes: { type: string }
+    MobileMutationResult:
+      type: object
+      required: [id, clientId, version, createdAt]
+      properties:
+        id: { type: string }
+        clientId: { type: string }
+        version: { type: integer }
+        createdAt: { type: string, format: date-time }
+    MobileSyncChange:
+      type: object
+      required: [changeId, entityType, entityId, operation, baseVersion, payload, changedAt]
+      properties:
+        changeId: { type: string }
+        entityType: { type: string, enum: [transaction, task, vital, medicationDose, event] }
+        entityId: { type: string, format: uuid, description: Server record UUID. Clients must generate a UUID before an offline sync upsert. }
+        operation: { type: string, enum: [upsert, delete] }
+        baseVersion: { type: integer, minimum: 0 }
+        payload: { type: object, additionalProperties: true }
+        changedAt: { type: string, format: date-time }
+    MobileSyncPushInput:
+      type: object
+      required: [changes]
+      properties:
+        changes: { type: array, maxItems: 500, items: { $ref: "#/components/schemas/MobileSyncChange" } }
+    MobileSyncChangeResult:
+      type: object
+      required: [changeId, status]
+      properties:
+        changeId: { type: string }
+        status: { type: string, enum: [applied, duplicate, conflict, rejected] }
+        version: { type: integer }
+        error: { $ref: "#/components/schemas/ApiError" }
+        conflict: { $ref: "#/components/schemas/ApiConflict" }
+    MobileSyncPushResult:
+      type: object
+      required: [cursor, results]
+      properties:
+        cursor: { type: string }
+        results: { type: array, items: { $ref: "#/components/schemas/MobileSyncChangeResult" } }
+    MobileRestoreCaptureInput:
+      type: object
+      required: [entityId, expectedVersion]
+      properties:
+        entityId: { type: string, format: uuid }
+        expectedVersion: { type: integer, minimum: 1 }
+    MobileRestoreCaptureResult:
+      type: object
+      required: [entityId, entityType, version, restored]
+      properties:
+        entityId: { type: string, format: uuid }
+        entityType: { type: string, enum: [transaction, task, vital, medicationDose, event] }
+        version: { type: integer, minimum: 1 }
+        restored: { type: boolean }
+    MobileSyncPullResult:
+      type: object
+      required: [cursor, hasMore, changes]
+      properties:
+        cursor: { type: string }
+        hasMore: { type: boolean }
+        changes: { type: array, items: { $ref: "#/components/schemas/MobileSyncChange" } }
+    MobileSyncHistoryEntry:
+      type: object
+      required: [changeId, entityType, entityId, status, version, changedAt]
+      properties:
+        changeId: { type: string }
+        entityType: { type: string, enum: [transaction, task, vital, medicationDose, event] }
+        entityId: { type: string, format: uuid }
+        status: { type: string, enum: [applied, deleted] }
+        version: { type: integer }
+        changedAt: { type: string, format: date-time }
+    MobileSyncHistoryResult:
+      type: object
+      required: [entries]
+      properties:
+        entries: { type: array, items: { $ref: "#/components/schemas/MobileSyncHistoryEntry" } }
+    MobileUploadInput:
+      type: object
+      required: [fileName, contentType, byteSize, sha256]
+      properties:
+        fileName: { type: string }
+        contentType: { type: string }
+        byteSize: { type: integer, minimum: 1, maximum: 52428800 }
+        sha256: { type: string, pattern: "^[a-fA-F0-9]{64}$" }
+    MobileUploadCompletion:
+      type: object
+      required: [sha256, byteSize]
+      properties:
+        sha256: { type: string, pattern: "^[a-fA-F0-9]{64}$" }
+        byteSize: { type: integer, minimum: 1 }
+    MobileUpload:
+      type: object
+      required: [id, status, expiresAt]
+      properties:
+        id: { type: string }
+        status: { type: string, enum: [pending, completed] }
+        uploadUrl: { type: [string, "null"] }
+        expiresAt: { type: string, format: date-time }
+    MobilePushDeviceInput:
+      type: object
+      required: [provider, token]
+      properties:
+        provider: { type: string, enum: [apns, fcm] }
+        token: { type: string, minLength: 16 }
+        environment: { type: string, enum: [sandbox, production] }
+    MobileReminderSettingsInput:
+      type: object
+      required: [medications, tasks, events, quietHoursStart, quietHoursEnd, timezone]
+      properties:
+        medications: { type: boolean }
+        tasks: { type: boolean }
+        events: { type: boolean }
+        quietHoursStart: { type: [string, "null"], pattern: "^([01]\\d|2[0-3]):[0-5]\\d$" }
+        quietHoursEnd: { type: [string, "null"], pattern: "^([01]\\d|2[0-3]):[0-5]\\d$" }
+        timezone: { type: string }
+    MobileReminderSettings:
+      allOf:
+        - { $ref: "#/components/schemas/MobileReminderSettingsInput" }
+        - type: object
+          required: [updatedAt]
+          properties: { updatedAt: { type: string, format: date-time } }
+    MobileMedicationReminderInput:
+      type: object
+      required: [enabled, revealName]
+      properties:
+        enabled: { type: boolean }
+        revealName: { type: boolean, description: Show the medication name on the lock screen }
+    MobileMedicationChoice:
+      type: object
+      required: [medicationId, medicationLabel, medType, supportsUnscheduled]
+      properties:
+        medicationId: { type: string }
+        medicationLabel: { type: string }
+        medType: { type: string, enum: [scheduled, prn, scheduled_prn, adhoc] }
+        supportsUnscheduled: { type: boolean }
+    MobileMedicationReminder:
+      type: object
+      required: [scheduleId, medicationId, medicationLabel, times, doseAmount, enabled, revealName]
+      properties:
+        scheduleId: { type: string }
+        medicationId: { type: string }
+        medicationLabel: { type: string }
+        times: { type: array, items: { type: string, pattern: "^([01]\\d|2[0-3]):[0-5]\\d$" } }
+        doseAmount: { type: string }
+        enabled: { type: boolean }
+        revealName: { type: boolean }
+    MobileMedicationReminders:
+      type: object
+      required: [timezone, quietHoursStart, quietHoursEnd, enabled, reminders, medications]
+      properties:
+        timezone: { type: string }
+        quietHoursStart: { type: [string, "null"], pattern: "^([01]\\d|2[0-3]):[0-5]\\d$" }
+        quietHoursEnd: { type: [string, "null"], pattern: "^([01]\\d|2[0-3]):[0-5]\\d$" }
+        enabled: { type: boolean }
+        reminders: { type: array, items: { $ref: "#/components/schemas/MobileMedicationReminder" } }
+        medications: { type: array, items: { $ref: "#/components/schemas/MobileMedicationChoice" } }
+    MobileStockDiagnostic:
+      type: object
+      required: [currentQuantity, ledgerQuantity, lastLedgerBalance, transactionCount, mismatchQuantity, hasMismatch]
+      properties:
+        currentQuantity: { type: number }
+        ledgerQuantity: { type: number }
+        lastLedgerBalance: { type: [number, "null"] }
+        transactionCount: { type: integer }
+        mismatchQuantity: { type: number }
+        hasMismatch: { type: boolean }
+    MobileStockLevel:
+      allOf:
+        - type: object
+          required: [id, medicationId, medicationLabel, currentQuantity, reorderThreshold, monthlyLimit]
+          properties:
+            id: { type: string }
+            medicationId: { type: string }
+            medicationLabel: { type: string }
+            currentQuantity: { type: number }
+            reorderThreshold: { type: number }
+            monthlyLimit: { type: [number, "null"] }
+        - { $ref: "#/components/schemas/MobileStockDiagnostic" }
+    MobileStockReconciliationInput:
+      type: object
+      required: [action, id, expectedCurrentQuantity, expectedLedgerQuantity]
+      properties:
+        action: { type: string, enum: [reconcile] }
+        id: { type: string }
+        expectedCurrentQuantity: { type: number }
+        expectedLedgerQuantity: { type: number }
+    MobileStockReconciliationResult:
+      type: object
+      required: [kind, diagnostic, stock, transaction]
+      properties:
+        kind: { type: string, enum: [reconciled] }
+        diagnostic: { $ref: "#/components/schemas/MobileStockDiagnostic" }
+        stock:
+          type: object
+          required: [id, currentQuantity]
+          properties:
+            id: { type: string }
+            currentQuantity: { type: number }
+        transaction:
+          type: object
+          required: [id, type, quantityChange, balanceAfter, notes]
+          properties:
+            id: { type: string }
+            type: { type: string, enum: [adjustment] }
+            quantityChange: { type: number }
+            balanceAfter: { type: number }
+            notes: { type: string }
+    AppleHealthMetricControl:
+      type: object
+      required: [sampleType, enabled]
+      properties:
+        sampleType:
+          type: string
+          enum: [cardiovascular, blood_pressure, sleep, activity, body_measurements, temperature, oxygen, respiratory]
+        enabled: { type: boolean }
+        lookbackDays: { type: integer, minimum: 1, maximum: 3650, default: 30 }
+    AppleHealthControlsInput:
+      type: object
+      required: [metrics]
+      properties:
+        metrics: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/AppleHealthMetricControl" } }
+    AppleHealthControls:
+      allOf:
+        - { $ref: "#/components/schemas/AppleHealthControlsInput" }
+        - type: object
+          required: [readOnly, updatedAt]
+          properties:
+            readOnly: { type: boolean, const: true }
+            updatedAt: { type: string, format: date-time }
+    AppleHealthImportedCopyControl:
+      type: object
+      required: [sampleType, annotation, excludeFromTrends, paused, disconnected]
+      properties:
+        sampleType:
+          type: string
+          enum: [cardiovascular, blood_pressure, sleep, activity, body_measurements, temperature, oxygen, respiratory]
+        annotation: { type: [string, "null"], maxLength: 500 }
+        excludeFromTrends: { type: boolean }
+        paused: { type: boolean }
+        disconnected: { type: boolean }
+    AppleHealthImportedCopyControlsInput:
+      type: object
+      required: [controls]
+      properties:
+        controls: { type: array, minItems: 1, maxItems: 8, items: { $ref: "#/components/schemas/AppleHealthImportedCopyControl" } }
+    AppleHealthImportedCopyControls:
+      allOf:
+        - { $ref: "#/components/schemas/AppleHealthImportedCopyControlsInput" }
+        - type: object
+          required: [readOnly, updatedAt]
+          properties:
+            readOnly: { type: boolean, const: true }
+            updatedAt: { type: string, format: date-time }
+    AppleHealthImportedCopyDeletionInput:
+      type: object
+      required: [sampleType]
+      properties:
+        sampleType:
+          type: string
+          enum: [cardiovascular, blood_pressure, sleep, activity, body_measurements, temperature, oxygen, respiratory]
+        healthKitUuids: { type: array, maxItems: 5000, items: { type: string } }
+        reason: { type: string, maxLength: 500 }
+    AppleHealthImportedCopyDeletionResult:
+      type: object
+      required: [tombstonesCreated, readOnly]
+      properties:
+        tombstonesCreated: { type: integer }
+        readOnly: { type: boolean, const: true }
+    AppleHealthSample:
+      type: object
+      required: [healthKitUuid, sampleType, value, unit, startAt, endAt, sourceBundleId, sourceRevision, metadata]
+      properties:
+        healthKitUuid: { type: string }
+        sampleType: { type: string }
+        value: { type: number }
+        unit: { type: string }
+        startAt: { type: string, format: date-time }
+        endAt: { type: string, format: date-time }
+        sourceBundleId: { type: string }
+        sourceRevision: { type: string }
+        metadata: { type: object, additionalProperties: true }
+    AppleHealthDeletion:
+      type: object
+      required: [healthKitUuid, sampleType, deletedAt]
+      properties:
+        healthKitUuid: { type: string }
+        sampleType: { type: string }
+        deletedAt: { type: string, format: date-time }
+    AppleHealthImportInput:
+      type: object
+      required: [sampleType, anchor, samples, deletions]
+      properties:
+        sampleType: { type: string }
+        previousAnchor: { type: [string, "null"] }
+        anchor: { type: string }
+        samples: { type: array, maxItems: 5000, items: { $ref: "#/components/schemas/AppleHealthSample" } }
+        deletions: { type: array, maxItems: 5000, items: { $ref: "#/components/schemas/AppleHealthDeletion" } }
+    AppleHealthImportResult:
+      type: object
+      required: [batchId, accepted, duplicates, deletions, anchor]
+      properties:
+        batchId: { type: string }
+        accepted: { type: integer }
+        duplicates: { type: integer }
+        deletions: { type: integer }
+        anchor: { type: string }
+    AppleHealthAnchor:
+      type: object
+      required: [sampleType, anchor, updatedAt]
+      properties:
+        sampleType: { type: string }
+        anchor: { type: string }
+        updatedAt: { type: string, format: date-time }
+    MobileAnomaly:
+      type: object
+      required: [id, sampleType, observedAt, summary, disclaimer, evidence, status, createdAt]
+      properties:
+        id: { type: string }
+        sampleType: { type: string }
+        observedAt: { type: string, format: date-time }
+        summary: { type: string, description: Neutral observation; never a diagnosis. }
+        disclaimer: { type: string, description: Must state that this is not medical advice or a diagnosis. }
+        evidence: { type: object, additionalProperties: true, description: Source sample and surrounding trend context; not a diagnosis. }
+        status: { type: string, enum: [pending, acknowledged, dismissed] }
+        createdAt: { type: string, format: date-time }
+    MobileAnomalyReviewInput:
+      type: object
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [acknowledged, dismissed] }
+        note: { type: string, maxLength: 1000 }

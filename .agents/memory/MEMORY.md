@@ -1,0 +1,47 @@
+- [External medical payload confirmation](medical-payload-confirmation.md) — require confirmation of a hashed current preview so consent cannot apply to a changed payload.
+- [Next preview hydration](next-preview-origins.md) — valid HTML does not prove hydration; inspect browser and chunk requests when a proxied UI is inert.
+- [Auth.js Google reauthorization](authjs-google-reauthorization.md) — persist upgraded OAuth grants explicitly for already-linked accounts.
+- [Auth.js preview origin](authjs-preview-origin.md) — pin the development auth URL to the public Replit origin so OAuth callbacks never use the internal bind address.
+- [Auth.js OAuth cookies](authjs-oauth-cookies.md) — let Auth.js choose secure PKCE/state cookie names so stale custom verifier cookies cannot surface as server errors.
+- [Post-merge database safety](post-merge-database-safety.md) — keep reconciliation dependency-only; apply schema changes through explicit committed migrations.
+- [Axe animation settling](axe-animation-settling.md) — wait for initial motion to settle before contrast scans or semi-transparent frames create false failures.
+- [Prisma migration drift](prisma-migration-drift.md) — create-only migrations can include unrelated schema drift; review and narrow generated SQL before committing.
+- [Health-claims database acceptance](health-claims-acceptance.md) — run authenticated import coverage against a disposable migrated schema, not a potentially stale shared database.
+- [Health-claim account retention](health-claim-account-retention.md) — account deletion erases claim values but retains ownership-detached import tombstones and metadata-only audit history.
+- [Health-claim ownership alerts](health-claim-ownership-alerting.md) — observe rejected audit writes centrally, keep payloads sanitized, and group bursts without delaying the original database error.
+- [Google Sheets bootstrap](google-sheets-bootstrap.md) — create a development feedback sheet and its headers atomically; an immediate follow-up write can return a misleading 404.
+- [Feedback sheet recovery](feedback-sheet-recovery.md) — recompare live rows before copying selected candidates; preserve the source and keep consolidation or deletion separate.
+- [Legacy URI decoder backport](legacy-uri-decoder-backport.md) — preserve CommonJS and plus-as-space behavior when securing query-string 7’s URI decoder.
+- [PDF import acceptance](pdf-import-acceptance.md) — prove PDF imports with structurally valid compressed fixtures and a real extractor, never plaintext wrapped in PDF markers.
+- [Blank form coercion](blank-form-coercion.md) — normalize empty optional form values before Zod coercion so blanks do not become zero or invalid dates.
+- [Medication stock serialization](medication-stock-serialization.md) — serializable advisory-lock transactions need bounded deterministic backoff under concurrent bursts.
+- [Income browser acceptance](income-browser-acceptance.md) — run authenticated persistence checks against a fully migrated disposable schema when development DBs lag.
+- [Medication stock reconciliation](medication-stock-reconciliation.md) — recover historical current-stock mismatches by appending an adjustment; do not rewrite prior ledger entries.
+- [Mobile API acceptance schemas](mobile-api-acceptance-schema.md) — Prisma migrations and Drizzle runtime tests need different disposable-schema wiring.
+- [Node binary compatibility](node-binary-compatibility.md) — prefer Uint8Array at Web/API boundaries because strict Node 24 types reject some Buffer views.
+- [Expo notification platform guard](expo-notification-platform-guard.md) — gate native notification response APIs on web or the preview can crash before rendering.
+- [Bash aggregate parsing](bash-aggregate-parsing.md) — emit a trailing newline before reading parsed command metrics or fail-closed traps can misclassify passing gates.
+- [Composite ownership cleanup](health-claim-deletion-drift.md) — delete drifted child rows by parent IDs as well as owner fields when the relation includes a composite owner key.
+- [Mobile canonical acceptance](mobile-canonical-acceptance.md) — distinguish staged IDs from canonical rows and assert required Prisma timestamps in bridge coverage.
+- [psql command variables](psql-command-variables.md) — do not rely on psql variable interpolation inside -c SQL; use validated literals or stdin scripts.
+- [Project task snapshot completeness](project-task-snapshot-completeness.md) — task queries can truncate below 100 records; reconcile returned refs against totalCount before accepting a snapshot.
+- [Recipe photo extraction](recipe-photo-extraction.md) — keep bounded vision imports review-only, with safe local OCR fallback when hosted AI is unavailable.
+- [Expo preview content negotiation](expo-preview-content-negotiation.md) — validate native manifests with Expo headers; plain HTTPS can return the web shell instead of JSON.
+- [Local Expo Apple modules](expo-local-apple-modules.md) — a local Swift module needs a top-level podspec for Apple autolinking; expo-module.config.json alone is not enough.
+- [CSV mapping persistence](csv-mapping-persistence.md) — key auto-mapping to header changes, not cell edits, so correcting rows never resets explicit mappings.
+- [Prisma client output](prisma-client-output.md) — keep explicit prisma-client-js output in node_modules/.prisma/client when imports use @prisma/client.
+- [Prisma managed timestamps in raw SQL](prisma-managed-timestamps-raw-sql.md) — raw inserts must supply required @updatedAt values because Prisma, not PostgreSQL, manages them.
+- [Release lint boundaries](release-lint-boundaries.md) — keep generated Playwright and platform-managed files out of app lint; SSR lint rejects inline suppressions.
+- [Release evidence privacy tests](release-evidence-privacy-tests.md) — keep sensitive fixture labels out of wrapper-generated paths when asserting redacted evidence.
+- [Database target identity](database-target-identity.md) — match acceptance labels to database-level metadata, never an operator or session setting.
+- [Auth browser fixtures](auth-browser-fixtures.md) — stub protected callback destinations when browser tests mock Auth.js sessions.
+- [Mobile capture recovery privacy](mobile-capture-recovery-privacy.md) — retain deleted payloads only in the owner-scoped record; tombstone sync changes must stay empty until explicit restore.
+- [Migration acceptance shell](migration-acceptance-shell.md) — use pnpm-resolved Prisma binaries and shell-expand generated IDs outside dollar-quoted psql blocks.
+- [Node test module mocks](node-test-module-mocks.md) — invoke Node’s experimental module-mock flag directly; Node 24 rejects it through NODE_OPTIONS.
+- [Node test mocking under tsx](node-test-mock-module.md) — the isolated API suite may fail before collection when the active loader lacks node:test module mocking.
+- [Task priority reconciliation](task-priority-reconciliation.md) — large task-service reads truncate or rate-limit; reconcile with small exact-reference batches and verify dependency closure.
+- [Browser acceptance database](browser-acceptance-database.md) — run authenticated browser CRUD checks against a disposable fully migrated schema when shared development lags migrations.
+- [Calendar identity migration](calendar-identity-migration.md) — test both fresh installs and upgrade paths when tightening nullable provider identity rules.
+- [Calendar evidence timestamps](calendar-evidence-timestamps.md) — accept canonical UTC evidence timestamps with or without milliseconds across wrapper paths.
+- [Controlled Google OAuth fixture](google-oauth-fixture.md) — use a test-only generic OAuth provider with the Google id when live OpenID tokens are unavailable.
+- [React Query workspace context](react-query-workspace-context.md) — pnpm peer variants can split Query context; export providers with generated hooks.

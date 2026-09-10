@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "recentCompletedLimit": 20,
+  "releases": [
+    {
+      "id": "R1",
+      "name": "Trust and recovery beta",
+      "status": "testing-next",
+      "capacity": 16,
+      "stabilizationReserve": 4,
+      "testerOutcomeLimit": 12,
+      "checklistGapPolicy": "warn",
+      "testerOutcomeExclusions": [],
+      "testerOutcomeRefs": [
+        "#171", "#164", "#116", "#105", "#134", "#123",
+        "#120", "#124", "#110", "#26", "#33", "#30"
+      ],
+      "testingGoal": "Let testers exercise Ishiki's highest-risk privacy, account, recovery, and release-safety paths before broader feature testing.",
+      "entryDependencies": [],
+      "releaseGate": "All assigned privacy and recovery acceptance checks pass on disposable data, the iPhone Expo handoff check passes before tester sessions, and no critical or high-priority blocker is open.",
+      "feedbackFocus": "Unexpected access, destructive outcomes, unclear recovery advice, and release checks that cannot be trusted.",
+      "knownExclusions": [
+        "Everyday health, money, and connected-life feature breadth belongs to later release testing.",
+        "Production publishing, deployment, and real credential changes are not part of this test cycle."
+      ]
+    },
+    {
+      "id": "R2",
+      "name": "Everyday health and money beta",
+      "status": "developing",
+      "capacity": 20,
+      "stabilizationReserve": 4,
+      "testerOutcomeLimit": 12,
+      "checklistGapPolicy": "warn",
+      "testerOutcomeExclusions": [],
+      "testerOutcomeRefs": [
+        "#174", "#161", "#148", "#153", "#142", "#133",
+        "#122", "#112", "#111", "#58", "#53", "#89"
+      ],
+      "testingGoal": "Give testers coherent health, medication, money, work, and daily-planning workflows after the trust baseline is stable.",
+      "entryDependencies": ["R1"],
+      "releaseGate": "R1 feedback is triaged; core health and money browser/mobile acceptance passes; no unresolved data-integrity blocker remains.",
+      "feedbackFocus": "Whether daily records are easy to create, correct, understand, and recover across desktop and mobile.",
+      "knownExclusions": [
+        "Calendar, household, recipe, study, and broader connected-life testing belongs to R3.",
+        "Unfinished native integrations and production publishing are not part of this test cycle."
+      ]
+    },
+    {
+      "id": "R3",
+      "name": "Connected life beta",
+      "status": "planned",
+      "capacity": 20,
+      "stabilizationReserve": 4,
+      "testerOutcomeLimit": 12,
+      "checklistGapPolicy": "warn",
+      "testerOutcomeExclusions": [],
+      "testerOutcomeRefs": [
+        "#146", "#151", "#145", "#144", "#109", "#49",
+        "#40", "#80", "#78", "#42", "#31"
+      ],
+      "testingGoal": "Expand testing to Calendar, feedback, household coordination, imports, recipes, study, and other connected workflows.",
+      "entryDependencies": ["R1", "R2"],
+      "releaseGate": "Earlier release feedback is resolved or explicitly deferred; connection and sharing boundaries pass privacy review.",
+      "feedbackFocus": "Consent, sharing boundaries, reconnection, cross-device continuity, and whether connected workflows reduce manual effort.",
+      "knownExclusions": [
+        "Any connected workflow that has not passed its privacy and consent checks remains excluded.",
+        "Production publishing and unsupported provider integrations are not part of this test cycle."
+      ]
+    }
+  ]
+}
