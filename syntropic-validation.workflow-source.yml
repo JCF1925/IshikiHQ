@@ -1,0 +1,332 @@
+name: Syntropic validation
+
+on:
+  push:
+    paths:
+      - "artifacts/syntropic/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/**"
+  pull_request:
+    paths:
+      - "artifacts/syntropic/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/**"
+  workflow_dispatch:
+
+concurrency:
+  group: syntropic-validation-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-lint:
+    name: Validate all GitHub Actions workflows
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Lint all GitHub Actions workflows
+        uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
+
+  credential-free-release-checks:
+    name: Credential-free release checks
+    needs: workflow-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify lint release contract
+        run: pnpm --filter @workspace/syntropic run test:lint-release
+
+      - name: "Run: pnpm --filter @workspace/syntropic run lint"
+        run: pnpm --filter @workspace/syntropic run lint
+
+      - name: "Run: pnpm --filter @workspace/syntropic run typecheck"
+        run: pnpm --filter @workspace/syntropic run typecheck
+
+      - name: "Run: pnpm --filter @workspace/syntropic run test"
+        run: pnpm --filter @workspace/syntropic run test
+
+      - name: "Run: pnpm --filter @workspace/syntropic run build"
+        run: pnpm --filter @workspace/syntropic run build
+
+  account-deletion-database-acceptance:
+    name: Account-deletion migration acceptance
+    needs: workflow-lint
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: syntropic_acceptance
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d syntropic_acceptance"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Provision disposable acceptance target identity
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/syntropic_acceptance
+        run: |
+          psql "$DATABASE_URL" --command \
+            "ALTER DATABASE syntropic_acceptance SET syntropic.acceptance_target = 'disposable'"
+
+      - name: Run account-deletion acceptance against disposable PostgreSQL
+        shell: bash
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/syntropic_acceptance
+          DATABASE_ACCEPTANCE_TARGET: disposable
+          DATABASE_ACCEPTANCE_EVIDENCE_FILE: artifacts/syntropic/account-deletion-database-acceptance.evidence
+          DATABASE_ACCEPTANCE_TREND_FILE: artifacts/syntropic/account-deletion-database-acceptance.trend.json
+        run: |
+          set -o pipefail
+          echo "Running migrated account-deletion acceptance against the disposable PostgreSQL service"
+          pnpm --filter @workspace/syntropic run acceptance:database
+
+      - name: Upload database acceptance trend record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: database-acceptance-trend-account-deletion-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/syntropic/account-deletion-database-acceptance.trend.json
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload sanitized account-deletion acceptance evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: account-deletion-database-acceptance-evidence
+          path: artifacts/syntropic/account-deletion-database-acceptance.evidence
+          if-no-files-found: warn
+
+  google-auth-wrapper:
+    name: Credential-free wrapper regressions
+    needs: workflow-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run credential-free Google auth wrapper regression
+        shell: bash
+        run: |
+          set -o pipefail
+          log_file="artifacts/syntropic/google-auth-wrapper.log"
+          mkdir -p "$(dirname "$log_file")"
+          echo "Running: pnpm --filter @workspace/syntropic run test:auth-google:wrapper"
+          pnpm --filter @workspace/syntropic run test:auth-google:wrapper 2>&1 | tee "$log_file"
+
+      - name: Run Google staging release evidence wrapper regression
+        shell: bash
+        run: |
+          set -o pipefail
+          log_file="artifacts/syntropic/google-auth-release-evidence-wrapper.log"
+          mkdir -p "$(dirname "$log_file")"
+          echo "Running: pnpm --filter @workspace/syntropic run test:auth-google:evidence-wrapper"
+          pnpm --filter @workspace/syntropic run test:auth-google:evidence-wrapper 2>&1 | tee "$log_file"
+
+      - name: Run medication stock target wrapper regression
+        shell: bash
+        run: |
+          set -o pipefail
+          log_file="artifacts/syntropic/medication-stock-wrapper.log"
+          mkdir -p "$(dirname "$log_file")"
+          echo "Running: pnpm --filter @workspace/syntropic run test:medication-stock:wrapper"
+          pnpm --filter @workspace/syntropic run test:medication-stock:wrapper 2>&1 | tee "$log_file"
+
+      - name: Run Google Calendar evidence privacy wrapper regression
+        shell: bash
+        run: |
+          set -o pipefail
+          log_file="artifacts/syntropic/google-calendar-wrapper.log"
+          mkdir -p "$(dirname "$log_file")"
+          echo "Running: pnpm --filter @workspace/syntropic run test:calendar-google:wrapper"
+          pnpm --filter @workspace/syntropic run test:calendar-google:wrapper 2>&1 | tee "$log_file"
+
+      - name: Upload wrapper regression log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: google-auth-wrapper-logs
+          path: artifacts/syntropic/google-auth-wrapper.log
+          if-no-files-found: warn
+
+      - name: Upload Google release evidence wrapper log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: google-auth-release-evidence-wrapper-logs
+          path: artifacts/syntropic/google-auth-release-evidence-wrapper.log
+          if-no-files-found: warn
+
+      - name: Upload medication stock wrapper regression log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: medication-stock-wrapper-logs
+          path: artifacts/syntropic/medication-stock-wrapper.log
+          if-no-files-found: warn
+
+      - name: Upload Google Calendar wrapper regression log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: google-calendar-wrapper-logs
+          path: artifacts/syntropic/google-calendar-wrapper.log
+          if-no-files-found: warn
+
+  health-claims-database:
+    name: Health claims database acceptance
+    needs: workflow-lint
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: syntropic_acceptance
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d syntropic_acceptance"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/syntropic_acceptance
+      DATABASE_ACCEPTANCE_TARGET: disposable
+      DATABASE_ACCEPTANCE_EVIDENCE_FILE: artifacts/syntropic/health-claims-database-acceptance.evidence
+      DATABASE_ACCEPTANCE_TREND_FILE: artifacts/syntropic/health-claims-database-acceptance.trend.json
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Provision disposable acceptance target identity
+        run: |
+          psql "$DATABASE_URL" --command \
+            "ALTER DATABASE syntropic_acceptance SET syntropic.acceptance_target = 'disposable'"
+
+      - name: Run migrated health claims acceptance
+        shell: bash
+        run: |
+          if [[ -z "${DATABASE_URL:-}" ]]; then
+            echo "DATABASE_URL is required for disposable database acceptance" >&2
+            exit 1
+          fi
+
+          set +e
+          pnpm --filter @workspace/syntropic run acceptance:database
+          status=$?
+          set -e
+
+          if [[ "$status" -eq 0 ]]; then
+            {
+              echo "### Disposable database acceptance"
+              echo
+              sed 's/^/- /' "$DATABASE_ACCEPTANCE_EVIDENCE_FILE"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "Disposable database acceptance: passed"
+          else
+            {
+              echo "### Disposable database acceptance"
+              echo
+              sed 's/^/- /' "$DATABASE_ACCEPTANCE_EVIDENCE_FILE"
+            } >> "$GITHUB_STEP_SUMMARY"
+            category="$(sed -n 's/^category=//p' "$DATABASE_ACCEPTANCE_EVIDENCE_FILE")"
+            echo "::error::Disposable database acceptance failed in category $category with exit code $status"
+            exit "$status"
+          fi
+
+      - name: Upload database acceptance trend record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: database-acceptance-trend-health-claims-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/syntropic/health-claims-database-acceptance.trend.json
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload sanitized health claims acceptance evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: health-claims-database-acceptance-evidence
+          path: artifacts/syntropic/health-claims-database-acceptance.evidence
+          if-no-files-found: warn
