@@ -163,6 +163,21 @@ export const RecordMobileMedicationDoseResponse = zod.object({
 })
 
 
+export const GetMobileMedicationHistoryResponse = zod.object({
+  "entries": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "medicationId": zod.string().uuid(),
+  "medicationLabel": zod.string(),
+  "scheduleId": zod.string().uuid().nullable(),
+  "takenAt": zod.coerce.date(),
+  "dose": zod.string().nullable(),
+  "status": zod.enum(['taken', 'skipped']),
+  "skipReason": zod.string().nullable(),
+  "kind": zod.enum(['scheduled', 'unscheduled'])
+}))
+})
+
+
 export const createMobileEventHeaderIdempotencyKeyMin = 8;
 export const createMobileEventHeaderIdempotencyKeyMax = 200;
 
@@ -297,6 +312,7 @@ export const PullMobileSyncResponse = zod.object({
 }))
 })
 
+
 export const GetMobileSyncHistoryResponse = zod.object({
   "entries": zod.array(zod.object({
   "changeId": zod.string(),
@@ -307,6 +323,8 @@ export const GetMobileSyncHistoryResponse = zod.object({
   "changedAt": zod.coerce.date()
 }))
 })
+
+
 export const initiateMobileUploadHeaderIdempotencyKeyMin = 8;
 export const initiateMobileUploadHeaderIdempotencyKeyMax = 200;
 
@@ -738,3 +756,4 @@ export const ReviewMobileAnomalyResponse = zod.object({
   "status": zod.enum(['pending', 'acknowledged', 'dismissed']),
   "createdAt": zod.coerce.date()
 })
+
