@@ -11,5 +11,7 @@ connection options, allowing a shared development database to appear to have
 an approved acceptance label.
 
 **How to apply:** Provision an approved target class at the database level and
-read that catalog-backed value before creating any acceptance schema. Keep
-mismatch diagnostics aggregate and avoid emitting connection or identity data.
+read that catalog-backed value before creating any acceptance schema. Run
+acceptance against a dedicated disposable database; never mark the shared
+development database as approved. Keep mismatch diagnostics aggregate and
+avoid emitting connection or identity data.
