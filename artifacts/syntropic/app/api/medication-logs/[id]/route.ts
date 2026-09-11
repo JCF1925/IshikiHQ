@@ -22,9 +22,11 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   const result = await withMedicationStockTransaction(userId, medicationId, async tx => {
     const current = await tx.medicationLog.findFirst({ where: { id, userId }, include: { schedule: true } })
     if (!current) return 'NOT_FOUND' as const
-    const oldDose = current.skipped ? 0 : Number(current.doseTaken ?? current.schedule?.doseAmount)
+    const schedule = current.schedule
+    const scheduledDose = schedule ? schedule.doseAmount : undefined
+    const oldDose = current.skipped ? 0 : Number(current.doseTaken ?? scheduledDose)
     const nextSkipped = changes.skipped ?? current.skipped
-    const nextDose = nextSkipped ? 0 : Number(changes.doseTaken ?? current.doseTaken ?? current.schedule?.doseAmount)
+    const nextDose = nextSkipped ? 0 : Number(changes.doseTaken ?? current.doseTaken ?? scheduledDose)
     if (!Number.isFinite(oldDose) || oldDose < 0 || !Number.isFinite(nextDose) || nextDose < 0) return 'INVALID_DOSE' as const
     const delta = oldDose - nextDose // positive means returning stock
     if (delta) {
