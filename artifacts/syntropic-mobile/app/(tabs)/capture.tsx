@@ -1,11 +1,11 @@
 import { Feather } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useEffect, useState } from 'react';
 import { Button, Card, Field, type } from '@/components/ui';
 import { useColors } from '@/hooks/useColors';
-import { buildMedicationCaptureQueueInput, getMedicationChoices, getMedicationSchedules } from '@/lib/medication-capture';
+import { buildMedicationCaptureQueueInput, getMedicationChoices, getMedicationSchedules, reconcileMedicationSelection } from '@/lib/medication-capture';
 import { CaptureKind, useApp } from '@/providers/AppProvider';
+import { useCallback, useEffect, useState } from 'react';
 
 const kinds: { key: CaptureKind; label: string; icon: React.ComponentProps<typeof Feather>['name'] }[] = [
   { key: 'transaction', label: 'Money', icon: 'credit-card' }, { key: 'task', label: 'Task', icon: 'check-square' },
@@ -18,7 +18,7 @@ type MedicationChoice = {
   supportsUnscheduled: boolean;
 };
 export default function CaptureScreen() {
-  const c = useColors(); const { enqueue, medicationReminders, refreshMedicationReminders, session } = useApp();
+  const c = useColors(); const { enqueue, medicationRefreshState, medicationReminders, refreshMedicationReminders, session } = useApp();
   const [kind, setKind] = useState<CaptureKind>('transaction');
   const [title, setTitle] = useState(''); const [detail, setDetail] = useState(''); const [attachmentUri, setAttachment] = useState<string>();
   const [amount, setAmount] = useState(''); const [vitalType, setVitalType] = useState('weight');
@@ -41,12 +41,34 @@ export default function CaptureScreen() {
   const schedules = getMedicationSchedules(medicationSchedules, medicationId);
   const selectedSchedule = schedules.find((item) => item.scheduleId === scheduleId);
   const supportsUnscheduled = selectedMedication?.supportsUnscheduled === true;
+  const medicationRefreshInProgress = medicationRefreshState === 'loading';
+  const medicationChoicesUnavailable = medicationReminders === null && medicationRefreshState === 'error';
+
+  const retryMedicationRefresh = useCallback(async () => {
+    setMessage('');
+    try {
+      await refreshMedicationReminders();
+    } catch {
+      setMessage('Medication choices are unavailable offline. Connect and try again.');
+    }
+  }, [refreshMedicationReminders]);
 
   useEffect(() => {
-    if (kind === 'medication' && session && !medicationReminders) {
-      void refreshMedicationReminders().catch(() => setMessage('Medication choices are unavailable right now. Try again when connected.'));
+    if (kind === 'medication' && session && !medicationReminders && medicationRefreshState === 'idle') {
+      void retryMedicationRefresh();
     }
-  }, [kind, session, medicationReminders, refreshMedicationReminders]);
+  }, [kind, session, medicationRefreshState, medicationReminders, retryMedicationRefresh]);
+
+  useEffect(() => {
+    if (!medicationReminders) return;
+    const nextSelection = reconcileMedicationSelection(medicationSchedules, { medicationId, scheduleId });
+    if (nextSelection.medicationId !== medicationId) {
+      setMedicationId(nextSelection.medicationId);
+      setMedicationMode('scheduled');
+      setDose('');
+    }
+    if (nextSelection.scheduleId !== scheduleId) setScheduleId(nextSelection.scheduleId);
+  }, [medicationReminders]);
 
   const chooseMedication = (nextMedicationId: string) => {
     setMedicationId(nextMedicationId);
@@ -64,6 +86,14 @@ export default function CaptureScreen() {
     if (!result.canceled) setAttachment(result.assets[0]?.uri);
   };
   const save = async () => {
+    if (kind === 'medication' && !medicationReminders) {
+      setMessage('Medication choices are unavailable offline. Retry the refresh before saving.');
+      return;
+    }
+    if (kind === 'medication' && !selectedMedication) {
+      setMessage('Choose an active medication first.');
+      return;
+    }
     const captureTitle = kind === 'medication' ? selectedMedication?.medicationLabel ?? '' : title.trim();
     if (!captureTitle) { setMessage(kind === 'medication' ? 'Choose a medication first.' : 'Add a short description first.'); return; }
     const parsedAmount = Number(amount);
@@ -125,7 +155,13 @@ export default function CaptureScreen() {
       {kind === 'health' ? <><Field label="Vital type" value={vitalType} onChangeText={setVitalType} placeholder="weight, HR, O2_sat" /><Field label="Value" value={vitalValue} onChangeText={setVitalValue} keyboardType="decimal-pad" placeholder="0" /><Field label="Unit" value={vitalUnit} onChangeText={setVitalUnit} placeholder="kg, bpm, %" /></> : null}
       {kind === 'medication' ? <View style={styles.medicationChoices}>
         <Text style={[styles.choiceLabel, { color: c.foreground }]}>Medication</Text>
-         {medicationReminders === null ? <Text style={[type.meta, { color: c.mutedForeground }]}>Loading your active medications…</Text> : medications.length === 0 ? <Text style={[type.meta, { color: c.mutedForeground }]}>No active medications are available.</Text> : <View style={styles.choiceList}>{medications.map((item) => <Pressable key={item.medicationId} accessibilityRole="button" accessibilityState={{ selected: medicationId === item.medicationId }} onPress={() => chooseMedication(item.medicationId)} style={[styles.choice, { backgroundColor: medicationId === item.medicationId ? c.accent : c.card, borderColor: medicationId === item.medicationId ? c.primary : c.border, borderRadius: c.radius }]}><View style={{ flex: 1, gap: 3 }}><Text style={[styles.choiceText, { color: c.foreground }]}>{item.medicationLabel}</Text><Text style={[type.meta, { color: c.mutedForeground }]}>{item.medType === 'prn' ? 'PRN / as needed' : item.medType === 'scheduled_prn' ? 'Scheduled + PRN' : item.medType === 'adhoc' ? 'Ad-hoc' : 'Scheduled'}{item.supportsUnscheduled ? ' · Unscheduled available' : ''}</Text></View><Feather name={medicationId === item.medicationId ? 'check-circle' : 'circle'} size={19} color={medicationId === item.medicationId ? c.primary : c.mutedForeground} /></Pressable>)}</View>}
+          {medicationReminders === null
+            ? medicationChoicesUnavailable
+              ? <View style={styles.choiceRecovery}><Text style={[type.meta, { color: c.destructive }]}>Medication choices are unavailable offline. Connect to the internet and retry to load your active medications. Your capture stays open.</Text><Button secondary label={medicationRefreshInProgress ? 'Refreshing…' : 'Retry medication refresh'} icon="refresh-cw" disabled={medicationRefreshInProgress} onPress={() => void retryMedicationRefresh()} testID="retry-medication-refresh" /></View>
+              : <Text style={[type.meta, { color: c.mutedForeground }]}>Loading your active medications…</Text>
+            : medications.length === 0
+              ? <Text style={[type.meta, { color: c.mutedForeground }]}>No active medications are available.</Text>
+              : <View style={styles.choiceList}>{medications.map((item) => <Pressable key={item.medicationId} accessibilityRole="button" accessibilityState={{ selected: medicationId === item.medicationId }} onPress={() => chooseMedication(item.medicationId)} style={[styles.choice, { backgroundColor: medicationId === item.medicationId ? c.accent : c.card, borderColor: medicationId === item.medicationId ? c.primary : c.border, borderRadius: c.radius }]}><View style={{ flex: 1, gap: 3 }}><Text style={[styles.choiceText, { color: c.foreground }]}>{item.medicationLabel}</Text><Text style={[type.meta, { color: c.mutedForeground }]}>{item.medType === 'prn' ? 'PRN / as needed' : item.medType === 'scheduled_prn' ? 'Scheduled + PRN' : item.medType === 'adhoc' ? 'Ad-hoc' : 'Scheduled'}{item.supportsUnscheduled ? ' · Unscheduled available' : ''}</Text></View><Feather name={medicationId === item.medicationId ? 'check-circle' : 'circle'} size={19} color={medicationId === item.medicationId ? c.primary : c.mutedForeground} /></Pressable>)}</View>}
           {medicationId ? <><Text style={[styles.choiceLabel, { color: c.foreground }]}>Dose type</Text><View style={styles.choiceList}>
             <Pressable accessibilityRole="button" accessibilityState={{ selected: medicationMode === 'scheduled', disabled: schedules.length === 0 }} disabled={schedules.length === 0} onPress={() => { setMedicationMode('scheduled'); setScheduleId(''); }} style={[styles.choice, { opacity: schedules.length ? 1 : .55, backgroundColor: medicationMode === 'scheduled' ? c.accent : c.card, borderColor: medicationMode === 'scheduled' ? c.primary : c.border, borderRadius: c.radius }]}><View style={{ flex: 1, gap: 3 }}><Text style={[styles.choiceText, { color: c.foreground }]}>Scheduled dose</Text><Text style={[type.meta, { color: c.mutedForeground }]}>{schedules.length ? 'Choose an active schedule below' : 'No active schedule'}</Text></View><Feather name={medicationMode === 'scheduled' ? 'check-circle' : 'circle'} size={19} color={medicationMode === 'scheduled' ? c.primary : c.mutedForeground} /></Pressable>
             <Pressable accessibilityRole="button" accessibilityState={{ selected: medicationMode === 'unscheduled', disabled: !supportsUnscheduled }} disabled={!supportsUnscheduled} onPress={() => { setMedicationMode('unscheduled'); setScheduleId(''); }} style={[styles.choice, { opacity: supportsUnscheduled ? 1 : .55, backgroundColor: medicationMode === 'unscheduled' ? c.accent : c.card, borderColor: medicationMode === 'unscheduled' ? c.primary : c.border, borderRadius: c.radius }]}><View style={{ flex: 1, gap: 3 }}><Text style={[styles.choiceText, { color: c.foreground }]}>Unscheduled / PRN</Text><Text style={[type.meta, { color: c.mutedForeground }]}>{supportsUnscheduled ? 'Record a dose without a schedule' : 'Not enabled for this medication'}</Text></View><Feather name={medicationMode === 'unscheduled' ? 'check-circle' : 'circle'} size={19} color={medicationMode === 'unscheduled' ? c.primary : c.mutedForeground} /></Pressable>
@@ -149,6 +185,7 @@ const styles = StyleSheet.create({
   kindText: { fontFamily: 'Inter_600SemiBold', fontSize: 13 },
   medicationChoices: { gap: 10 },
   choiceLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 13, marginTop: 3 },
+  choiceRecovery: { gap: 10 },
   choiceList: { gap: 8 },
   choice: { minHeight: 52, borderWidth: 1, paddingHorizontal: 13, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
   choiceText: { fontFamily: 'Inter_600SemiBold', fontSize: 15, flexShrink: 1 },
