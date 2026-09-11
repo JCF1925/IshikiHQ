@@ -54,9 +54,16 @@ export default defineConfig({
       },
     },
     {
+      name: 'signup-destination',
+      testMatch: /signup-destination\.spec\.ts/,
+      use: {
+        storageState: undefined,
+      },
+    },
+    {
       name: 'chromium',
       dependencies: ['setup'],
-      testIgnore: /(?:auth\.setup|recreated-account-health\.spec)\.ts/,
+      testIgnore: /(?:auth\.setup|recreated-account-health|signup-destination)\.spec\.ts/,
       use: {
         storageState: 'test-results/.auth/user.json',
       },
