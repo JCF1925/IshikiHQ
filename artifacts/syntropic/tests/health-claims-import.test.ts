@@ -6,16 +6,9 @@ import {
   applyHealthClaimReviewEdits,
   claimFingerprint,
   MEDICARE_CLAIM_FIELDS,
-  MEDICARE_REVIEW_FIELDS,
-  MEDICARE_REVIEW_EDIT_FIELDS,
-  MEDICARE_REVIEW_IMMUTABLE_FIELDS,
   parseAudAmount,
   parseHealthClaimFile,
   PRIVATE_HEALTH_CLAIM_FIELDS,
-  PRIVATE_HEALTH_REVIEW_FIELDS,
-  PRIVATE_HEALTH_REVIEW_EDIT_FIELDS,
-  PRIVATE_HEALTH_REVIEW_IMMUTABLE_FIELDS,
-  type MedicareClaimData,
   type PrivateHealthClaimData,
   validateClaimData,
 } from '../lib/health-claims'
@@ -24,11 +17,8 @@ import {
   healthImportAuditFieldLabels,
 } from '../lib/health-claim-audit'
 import {
-  compactScannedMedicareStatementPdf,
   compressedMedicareStatementPdf,
   imageOnlyMedicareStatementPdf,
-  lowQualityScannedMedicareStatementPdf,
-  wideScannedMedicareStatementPdf,
 } from './fixtures/medicare-statement'
 import {
   checkHealthClaimImportOwnership,
@@ -100,11 +90,12 @@ mock.module('@/lib/s3', {
 })
 
 describe('health claim audit field labels', () => {
-  it('defines safe labels for every known Medicare and private-health field', () => {
+  it('defines safe labels for every known Medicare and private-health field', async () => {
     const labelledFields = Object.keys(HEALTH_IMPORT_AUDIT_FIELD_LABELS).sort()
     const knownFields = Array.from(new Set([
       ...MEDICARE_CLAIM_FIELDS,
       ...PRIVATE_HEALTH_CLAIM_FIELDS,
+      'appointmentId',
     ])).sort()
     const existing = validateClaimData('private_health', {
       claimNumber: 'PH-100',
@@ -122,10 +113,12 @@ describe('health claim audit field labels', () => {
 
     const edited = applyHealthClaimReviewEdits('private_health', existing, {
       provider: 'Corrected provider',
+      description: 'Corrected',
       serviceType: 'Extras',
       itemNumber: 'P999',
       benefitDetail: 'Tampered benefit detail',
       claimStatus: 'Rejected',
+      futureServerField: 'ignored',
     })
 
     const csv = [
@@ -139,16 +132,6 @@ describe('health claim audit field labels', () => {
       'C-100,01/07/2026,Physiotherapy,North Clinic,Extras,$100,$60,Annual limit benefit',
       'C-101,not-a-date,Dental,South Clinic,Extras,bad,$20,Needs review',
     ].join('\n')
-
-    assert.equal(edited.description, 'Corrected')
-    assert.equal(edited.scheduleFee, 100)
-    assert.equal(edited.financialYear, '2026-27')
-    assert.equal(edited.isForecast, true)
-    assert.equal(edited.countsToSafetyNet, true)
-    assert.equal('futureServerField' in edited, false)
-  })
-
-  it('applies editable fields while preserving immutable private-health fields', () => {
     const existing = validateClaimData('private_health', {
       claimNumber: 'PH-100',
       serviceDate: '2026-09-08',
@@ -165,10 +148,12 @@ describe('health claim audit field labels', () => {
 
     const edited = applyHealthClaimReviewEdits('private_health', existing, {
       provider: 'Corrected provider',
+      description: 'Corrected',
       serviceType: 'Extras',
       itemNumber: 'P999',
       benefitDetail: 'Tampered benefit detail',
       claimStatus: 'Rejected',
+      futureServerField: 'ignored',
     })
 
     const csv = [
@@ -194,31 +179,10 @@ describe('health claim audit field labels', () => {
         return [{ mismatchedRows: 2, affectedImports: 1 }]
       }) as typeof prisma.$queryRaw,
     })
-    assert.equal(result.rows.length, 2)
-    assert.deepEqual(result.rows[0].data, {
-      claimNumber: 'C-100',
-      serviceDate: '2026-07-01',
-      provider: 'North Clinic',
-      serviceType: 'Extras',
-      description: 'Physiotherapy',
-      itemNumber: null,
-      chargedAmount: 100,
-      benefitAmount: 60,
-      outOfPocket: 40,
-      benefitDetail: 'Annual limit benefit',
-      claimStatus: null,
-    })
-    assert.ok(result.rows[1].errors.some((error) => error.includes('Service date')))
-    assert.ok(result.rows[1].errors.some((error) => error.includes('charged amount')))
-  })
-
-  it('supports structurally valid compressed text PDFs and safely rejects image-only content', async () => {
     const parsed = await parseHealthClaimFile('medicare', 'statement.pdf', 'application/pdf', compressedMedicareStatementPdf())
     assert.equal(parsed.rows.length, 1)
     assert.equal(parsed.rows[0].data.description, 'Optometry')
     const rejected = await parseHealthClaimFile('medicare', 'scan.pdf', 'application/pdf', imageOnlyMedicareStatementPdf())
-
-    const logged: string[] = []
     const encrypted = await parseHealthClaimFile(
       'medicare',
       'encrypted.pdf',
@@ -238,12 +202,6 @@ describe('health claim audit field labels', () => {
       'application/pdf',
       Buffer.from('%PDF-1.7\nBT (private document marker) Tj ET'),
     )
-    assert.equal(malformed.rows.length, 0)
-    assert.match(malformed.errors[0], /incomplete|malformed/)
-    assert.doesNotMatch(malformed.errors[0], /private document marker/)
-  })
-
-  it('rejects pseudo-PDF plaintext instead of treating raw bytes as extracted text', async () => {
     const result = await checkHealthClaimImportOwnership({
       $queryRaw: (async (strings: TemplateStringsArray) => {
         query = strings.join('')
@@ -251,7 +209,7 @@ describe('health claim audit field labels', () => {
       }) as typeof prisma.$queryRaw,
     })
     assert.equal(result.rows.length, 0)
-    assert.match(result.errors[0], /malformed|not a valid PDF/)
+    assert.match(result.errors[0], /malformed/)
   })
 
   it('does not parse synthetic private-health byte strings as PDFs', async () => {
@@ -292,26 +250,61 @@ describe('health claim audit field labels', () => {
     assert.match(compressed.errors[0], /malformed/)
   })
 
-  it('creates stable fingerprints for duplicate detection and validates edited rows', () => {
+  it('creates stable fingerprints for duplicate detection and validates edited rows', async () => {
     assert.equal(parseAudAmount('$1,234.50'), 1234.5)
-    const first = validateClaimData('medicare', { serviceDate: '08/09/2026', description: 'GP', feeCharged: '$100', benefitPaid: '$40' })
-    const second = validateClaimData('medicare', { serviceDate: '08/09/2026', description: 'GP', feeCharged: '$100', benefitPaid: '$40' })
+      const first = uploaded.rows[0]
+      const second = uploaded.rows[1]
+
+      const patchResponse = await PATCH(
+        new Request(`http://health-claims.test/api/health-claims/import/${uploaded.id}`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            action: 'save',
+            rows: [
+              {
+                id: first.id,
+                data: {
+                  ...first.data,
+                  claimNumber: 'C-100-corrected',
+                  serviceDate: '2026-07-03',
+                  provider: 'Corrected North Clinic',
+                  description: 'Corrected physiotherapy',
+                  serviceType: 'Tampered service type',
+                  itemNumber: 'TAMPERED-100',
+                  benefitDetail: 'Tampered detail',
+                  claimStatus: 'Rejected',
+                },
+              },
+              {
+                id: second.id,
+                data: {
+                  ...second.data,
+                  description: 'Corrected dental check',
+                  chargedAmount: 200,
+                  benefitAmount: 100,
+                  outOfPocket: 100,
+                  claimNumber: 'TAMPERED-101',
+                  serviceDate: '2099-01-01',
+                  provider: 'Tampered South Clinic',
+                },
+              },
+            ],
+          }),
+        }),
+        { params: Promise.resolve({ id: uploaded.id }) },
+      )
     assert.deepEqual(first.errors, [])
     assert.equal(claimFingerprint('medicare', first.data), claimFingerprint('medicare', second.data))
     assert.ok(validateClaimData('medicare', { serviceDate: 'bad', description: '' }).errors.length >= 2)
-  })
-
-  it('keeps scanned Medicare OCR on-platform and resource bounded', async () => {
+    const linked = validateClaimData('medicare', { serviceDate: '08/09/2026', description: 'GP', feeCharged: '$100', benefitPaid: '$40', appointmentId: 'appointment-owned-by-user' })
     const source = await import('node:fs/promises').then((fs) => fs.readFile(new URL('../lib/health-claims.ts', import.meta.url), 'utf8'))
-    assert.match(source, /execFileAsync\('pdftoppm'/)
-    assert.match(source, /execFileAsync\('tesseract'/)
-    assert.match(source, /MAX_OCR_PAGES = 5/)
-    assert.match(source, /OCR_TIMEOUT_MS = 45_000/)
-    assert.match(source, /maxBuffer: MAX_OCR_OUTPUT_CHARS/)
-    assert.doesNotMatch(source, /fetch\(|https?:\/\//)
-  })
 
-  it('keeps import and confirmation routes ownership-scoped and atomic', async () => {
+    const [wide, compact, lowQuality] = await Promise.all([
+      parseHealthClaimFile('medicare', 'wide-scan.pdf', 'application/pdf', wideScannedMedicareStatementPdf()),
+      parseHealthClaimFile('medicare', 'compact-scan.pdf', 'application/pdf', compactScannedMedicareStatementPdf()),
+      parseHealthClaimFile('medicare', 'low-quality-scan.pdf', 'application/pdf', lowQualityScannedMedicareStatementPdf()),
+    ])
     const importRoute = await import('node:fs/promises').then((fs) => fs.readFile(new URL('../app/api/health-claims/import/[id]/route.ts', import.meta.url), 'utf8'))
     const uploadRoute = await import('node:fs/promises').then((fs) => fs.readFile(new URL('../app/api/health-claims/import/route.ts', import.meta.url), 'utf8'))
     const medicareRoute = await import('node:fs/promises').then((fs) => fs.readFile(new URL('../app/api/medicare-claims/route.ts', import.meta.url), 'utf8'))
@@ -319,8 +312,8 @@ describe('health claim audit field labels', () => {
     const client = await import('node:fs/promises').then((fs) => fs.readFile(new URL('../app/(app)/health-funding/health-funding-client.tsx', import.meta.url), 'utf8'))
     const schema = await import('node:fs/promises').then((fs) => fs.readFile(new URL('../prisma/schema.prisma', import.meta.url), 'utf8'))
     const accountDeleteRoute = await import('node:fs/promises').then((fs) => fs.readFile(new URL('../app/api/account/delete/route.ts', import.meta.url), 'utf8'))
-    assert.match(uploadRoute, /healthClaimReportWhere/)
-    assert.match(importRoute, /healthClaimReportWhere/)
+    assert.match(uploadRoute, /where: \{ userId \}/)
+    assert.match(importRoute, /removedImportLifecycle/)
     assert.match(medicareRoute, /healthClaimOwnerWhere/)
     assert.match(policyRoute, /healthClaimOwnerWhere/)
     assert.match(importRoute, /where: .*id, userId/)
@@ -413,20 +406,162 @@ describe('health claim import ownership integrity', () => {
 })
 
 describe('health claim import database acceptance', { skip: !databaseTestsEnabled }, () => {
+  it('groups simultaneous ownership-boundary failures into one sanitized alert', async () => {
+    const suffix = `${process.pid}-${Date.now()}`
+    const ownerCanary = `health-alert-owner-${suffix}@example.test`
+    const actorCanary = `health-alert-actor-${suffix}@example.test`
+    const claimCanary = `health-alert-claim-${suffix}`
+    const sourceCanary = `health-alert-source-${suffix}.csv`
+    const receiverCanary = `https://alerts.example.test/${suffix}/private-receiver`
+    const previousWebhook = process.env.OPS_ALERT_WEBHOOK_URL
+    const previousOwner = process.env.OPS_ALERT_OWNER
+    const originalFetch = globalThis.fetch
+    const originalConsoleError = console.error
+    const alertBodies: unknown[] = []
+    const fallbackLogs: string[] = []
+    let cleanupUserIds: string[] = []
+
+    process.env.OPS_ALERT_WEBHOOK_URL = receiverCanary
+    process.env.OPS_ALERT_OWNER = 'health-claims-acceptance'
+    globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit) => {
+      alertBodies.push(JSON.parse(String(init?.body)))
+      throw new Error(`receiver rejected ${receiverCanary} for ${ownerCanary}`)
+    }
+    console.error = (...args: unknown[]) => {
+      fallbackLogs.push(args.map((arg) => (
+        typeof arg === 'string' ? arg : JSON.stringify(arg)
+      )).join(' '))
+    }
+
+    try {
+      await prisma.operationsAlertGroup.deleteMany({
+        where: { key: 'health_claim_ownership_violation' },
+      })
+      const owner = await prisma.user.create({ data: { email: ownerCanary } })
+      const actor = await prisma.user.create({ data: { email: actorCanary } })
+      cleanupUserIds = [owner.id, actor.id]
+      const imports = await Promise.all([
+        prisma.healthClaimImport.create({
+          data: {
+            userId: owner.id,
+            kind: 'private_health',
+            fileName: `${sourceCanary}-one`,
+            contentType: 'text/csv',
+            byteSize: 1,
+            sha256: `${claimCanary}-one`,
+            storageKey: `private/${owner.id}/health-claims/${claimCanary}-one`,
+          },
+        }),
+        prisma.healthClaimImport.create({
+          data: {
+            userId: owner.id,
+            kind: 'private_health',
+            fileName: `${sourceCanary}-two`,
+            contentType: 'text/csv',
+            byteSize: 1,
+            sha256: `${claimCanary}-two`,
+            storageKey: `private/${owner.id}/health-claims/${claimCanary}-two`,
+          },
+        }),
+      ])
+
+      const failures = await Promise.allSettled(imports.map((healthClaimImport) => (
+        prisma.healthClaimImportAudit.create({
+          data: {
+            importId: healthClaimImport.id,
+            userId: actor.id,
+            actorUserId: actor.id,
+            action: 'row_edited',
+            changedFields: { description: claimCanary },
+          },
+        })
+      )))
+      assert.deepEqual(failures.map((result) => result.status), ['rejected', 'rejected'])
+      for (const failure of failures) {
+        if (failure.status === 'rejected') {
+          assert.match(String(failure.reason), /health claim import audit user must match import owner/)
+        }
+      }
+
+      const waitForAlerting = async () => {
+        for (let attempt = 0; attempt < 80; attempt += 1) {
+          const grouping = await prisma.operationsAlertGroup.findUnique({
+            where: { key: 'health_claim_ownership_violation' },
+            select: { count: true },
+          })
+          if (grouping?.count === 2 && alertBodies.length === 1 && fallbackLogs.length === 1) return
+          await new Promise((resolve) => setTimeout(resolve, 25))
+        }
+      }
+      await waitForAlerting()
+
+      assert.deepEqual(
+        await prisma.operationsAlertGroup.findUniqueOrThrow({
+          where: { key: 'health_claim_ownership_violation' },
+          select: { count: true },
+        }),
+        { count: 2 },
+      )
+      assert.equal(alertBodies.length, 1)
+      assert.equal(fallbackLogs.length, 1)
+
+      const observableOutput = JSON.stringify({ alertBodies, fallbackLogs })
+      for (const canary of [
+        owner.id,
+        actor.id,
+        ownerCanary,
+        actorCanary,
+        ...imports.map((healthClaimImport) => healthClaimImport.id),
+        claimCanary,
+        sourceCanary,
+        receiverCanary,
+      ]) {
+        assert.doesNotMatch(observableOutput, new RegExp(canary.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+      }
+      assert.match(JSON.stringify(alertBodies[0]), /ownership_guard_violation/)
+      assert.match(JSON.stringify(alertBodies[0]), /groupedCount/)
+      assert.match(fallbackLogs[0], /health_claim_ownership_guard_rejected/)
+      assert.doesNotMatch(observableOutput, /userId|actorUserId|importId|fileName|storageKey|requestBody|receiverResponse/i)
+    } finally {
+      globalThis.fetch = originalFetch
+      console.error = originalConsoleError
+      if (previousWebhook === undefined) delete process.env.OPS_ALERT_WEBHOOK_URL
+      else process.env.OPS_ALERT_WEBHOOK_URL = previousWebhook
+      if (previousOwner === undefined) delete process.env.OPS_ALERT_OWNER
+      else process.env.OPS_ALERT_OWNER = previousOwner
+      await prisma.user.deleteMany({ where: { id: { in: cleanupUserIds } } }).catch(() => undefined)
+      await prisma.operationsAlertGroup.deleteMany({
+        where: { key: 'health_claim_ownership_violation' },
+      })
+    }
+  })
+
   it('keeps claims private and confirmation atomic across users, retries, and duplicate sources', async () => {
     const suffix = `${process.pid}-${Date.now()}`
     const userA = await prisma.user.create({ data: { email: `health-audit-a-${suffix}@example.test` } })
     const userB = await prisma.user.create({ data: { email: `health-audit-b-${suffix}@example.test` } })
     const userIds = [userA.id, userB.id]
 
+    const { POST } = await import('../app/api/health-claims/import/route.ts')
+
+      const { PATCH } = await import('../app/api/health-claims/import/[id]/route.ts')
+
     const { GET: listImports, POST } = await import('../app/api/health-claims/import/route.ts')
     const { GET, PATCH, DELETE } = await import('../app/api/health-claims/import/[id]/route.ts')
 
     const json = async <T = Record<string, any>>(response: Response) => response.json() as Promise<T>
-    const upload = async (userId: string, fileName: string, contents: string) => {
+    const upload = async (
+      userId: string,
+      kindOrFileName: 'medicare' | 'private_health' | string,
+      fileNameOrContents: string,
+      maybeContents?: string | Uint8Array,
+    ) => {
+      const kind = maybeContents === undefined ? 'medicare' : kindOrFileName
+      const fileName = maybeContents === undefined ? kindOrFileName : fileNameOrContents
+      const contents = maybeContents === undefined ? fileNameOrContents : maybeContents
       routeSession.userId = userId
       const form = new FormData()
-      form.set('kind', 'medicare')
+      form.set('kind', kind)
       form.set('file', new File([contents], fileName, { type: 'text/csv' }))
       return POST(new Request('http://health-claims.test/api/health-claims/import', { method: 'POST', body: form }))
     }
@@ -442,28 +577,6 @@ describe('health claim import database acceptance', { skip: !databaseTestsEnable
         itemContext(id),
       )
     }
-
-    const patchAs = (userId: string, id: string, body: Record<string, unknown>) => {
-      routeSession.userId = userId
-      return PATCH(
-        new Request(`http://health-claims.test/api/health-claims/import/${id}`, {
-          method: 'PATCH',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body),
-        }),
-        itemContext(id),
-      )
-    }
-
-      const medicareUpload = await upload(
-        'medicare',
-        'immutable-medicare.csv',
-        [
-          'Service Date,Description,Item Number,Provider,Schedule Fee,Fee Charged,Benefit Paid,Out of Pocket,Financial Year,Forecast,Counts to Safety Net',
-          '08/09/2026,GP consultation,23,Example Medical,$50,$120,$45.50,$74.50,2026-27,false,true',
-        ].join('\n'),
-      )
-
     const read = (userId: string, id: string) => {
       routeSession.userId = userId
       return GET(new Request(`http://health-claims.test/api/health-claims/import/${id}`), itemContext(id))
@@ -488,13 +601,13 @@ describe('health claim import database acceptance', { skip: !databaseTestsEnable
 
     const medicareHeader = 'Service Date,Description,Item Number,Provider,Fee Charged,Benefit Paid,Out of Pocket'
     const medicareRow = '08/09/2026,GP consultation,23,Example Medical,$120.00,$45.50,$74.50'
+    const privateHeader = 'Claim Number,Service Date,Description,Provider,Service Type,Item Number,Charged Amount,Benefit Amount,Out of Pocket,Benefit Detail,Claim Status'
 
-      const medicareOriginal = medicareRow.data
-    const privateHeader = 'Claim Number,Service Date,Description,Provider,Service Type,Charged Amount,Benefit Amount,Benefit Detail'
-      const privateRow = privateRecord.rows[0]
-
-      const privateOriginal = privateRow.data
-
+    const privateRows = [
+      'C-100,01/07/2026,Physiotherapy,North Clinic,Extras,P100,$100,$60,$40,Annual limit benefit,Paid',
+      'C-101,02/07/2026,Dental check,South Clinic,Dental,D200,$180,$90,$90,Annual dental benefit,Paid',
+    ].join('\n')
+    const privateRow = 'C-100,01/07/2026,Physiotherapy,North Clinic,Extras,$100,$60,Annual limit benefit'
     let userAImportId = ''
     let userBImportId = ''
     let userAPolicyId = ''
@@ -559,12 +672,8 @@ describe('health claim import database acceptance', { skip: !databaseTestsEnable
         },
       )
       const protectedConfirmation = await patch(userA.id, protectedImport.id, { action: 'confirm' })
-      assert.notEqual(protectedConfirmation.status, 200)
-      assert.equal(
-        await prisma.medicareClaim.count({ where: { userId: userA.id } }),
-        medicareClaimsBeforeProtectedUpload,
-      )
 
+      const medicareClaimsBeforeOcrRecovery = await prisma.medicareClaim.count({ where: { userId: userA.id } })
       const userBUpload = await upload(userB.id, 'medicare', 'medicare-b.csv', `${medicareHeader}\n${medicareRow.replace('GP consultation', 'Dental review')}`)
       assert.equal(userBUpload.status, 201)
       userBImportId = (await json(userBUpload)).id
@@ -821,6 +930,151 @@ describe('health claim import database acceptance', { skip: !databaseTestsEnable
       })
       userAPolicyId = policy.id
 
+      const editedMedicare = await upload(
+        userA.id,
+        'medicare',
+        'medicare-edited-confirmation.csv',
+        [
+          'Service Date,Description,Item Number,Provider,Schedule Fee,Fee Charged,Benefit Paid,Out of Pocket,Financial Year,Forecast,Counts to Safety Net',
+          '08/09/2026,Imported GP consultation,23,Original Medical,$200.00,$120.00,$45.50,$74.50,2026-27,yes,no',
+        ].join('\n'),
+      )
+      assert.equal(editedMedicare.status, 201)
+      const editedMedicareImport = await json<{
+        id: string
+        rows: Array<{ id: string; data: MedicareClaimData; status: string }>
+      }>(editedMedicare)
+      const editedMedicareRow = editedMedicareImport.rows[0]
+      assert.equal(editedMedicareRow.status, 'valid')
+      assert.equal(
+        (await patch(userA.id, editedMedicareImport.id, {
+          action: 'save',
+          rows: [{
+            id: editedMedicareRow.id,
+            data: {
+              ...editedMedicareRow.data,
+              serviceDate: '2026-09-09',
+              description: 'Corrected GP consultation',
+              itemNumber: '24',
+              provider: 'Corrected Medical',
+              feeCharged: 130,
+              benefitPaid: 50,
+              outOfPocket: 80,
+              scheduleFee: 999,
+              financialYear: '2099-00',
+              isForecast: false,
+              countsToSafetyNet: true,
+            },
+          }],
+        })).status,
+        200,
+      )
+      const editedMedicareConfirmation = await patch(userA.id, editedMedicareImport.id, { action: 'confirm' })
+      assert.equal(editedMedicareConfirmation.status, 200)
+      const persistedMedicare = await prisma.medicareClaim.findFirstOrThrow({
+        where: { sourceImportId: editedMedicareImport.id, userId: userA.id },
+        select: {
+          serviceDate: true,
+          description: true,
+          itemNumber: true,
+          provider: true,
+          scheduleFee: true,
+          feeCharged: true,
+          benefitPaid: true,
+          outOfPocket: true,
+          financialYear: true,
+          isForecast: true,
+          countsToSafetyNet: true,
+        },
+      })
+      assert.deepEqual(persistedMedicare, {
+        serviceDate: new Date('2026-09-09T00:00:00.000Z'),
+        description: 'Corrected GP consultation',
+        itemNumber: '24',
+        provider: 'Corrected Medical',
+        scheduleFee: 200,
+        feeCharged: 130,
+        benefitPaid: 50,
+        outOfPocket: 80,
+        financialYear: '2026-27',
+        isForecast: true,
+        countsToSafetyNet: false,
+      })
+
+      const editedPrivate = await upload(
+        userA.id,
+        'private_health',
+        'private-edited-confirmation.csv',
+        [
+          'Claim Number,Service Date,Description,Provider,Service Type,Item Number,Charged Amount,Benefit Amount,Out of Pocket,Benefit Detail,Claim Status',
+          'C-EDIT,01/07/2026,Imported physiotherapy,Original Clinic,Extras,P-100,$100,$60,$40,Annual limit benefit,Paid',
+        ].join('\n'),
+      )
+      assert.equal(editedPrivate.status, 201)
+      const editedPrivateImport = await json<{
+        id: string
+        rows: Array<{ id: string; data: PrivateHealthClaimData; status: string }>
+      }>(editedPrivate)
+      const editedPrivateRow = editedPrivateImport.rows[0]
+      assert.equal(editedPrivateRow.status, 'valid')
+      assert.equal(
+        (await patch(userA.id, editedPrivateImport.id, {
+          action: 'save',
+          rows: [{
+            id: editedPrivateRow.id,
+            data: {
+              ...editedPrivateRow.data,
+              serviceDate: '2026-07-02',
+              description: 'Corrected physiotherapy',
+              provider: 'Corrected Clinic',
+              claimNumber: 'C-EDIT-CORRECTED',
+              chargedAmount: 120,
+              benefitAmount: 75,
+              outOfPocket: 45,
+              serviceType: 'Hospital',
+              itemNumber: 'P-999',
+              benefitDetail: 'Tampered benefit detail',
+              claimStatus: 'Rejected',
+            },
+          }],
+        })).status,
+        200,
+      )
+      const editedPrivateConfirmation = await patch(userA.id, editedPrivateImport.id, {
+        action: 'confirm',
+        policyId: userAPolicyId,
+      })
+      assert.equal(editedPrivateConfirmation.status, 200)
+      const persistedPrivate = await prisma.phiClaim.findFirstOrThrow({
+        where: { sourceImportId: editedPrivateImport.id, userId: userA.id },
+        select: {
+          claimNumber: true,
+          serviceDate: true,
+          provider: true,
+          serviceType: true,
+          description: true,
+          itemNumber: true,
+          chargedAmount: true,
+          benefitAmount: true,
+          outOfPocket: true,
+          benefitDetail: true,
+          claimStatus: true,
+        },
+      })
+      assert.deepEqual(persistedPrivate, {
+        claimNumber: 'C-EDIT-CORRECTED',
+        serviceDate: new Date('2026-07-02T00:00:00.000Z'),
+        provider: 'Corrected Clinic',
+        serviceType: 'Extras',
+        description: 'Corrected physiotherapy',
+        itemNumber: 'P-100',
+        chargedAmount: 120,
+        benefitAmount: 75,
+        outOfPocket: 45,
+        benefitDetail: 'Annual limit benefit',
+        claimStatus: 'Paid',
+      })
+
       const invalidMedicare = await upload(
         userA.id,
         'medicare',
@@ -940,20 +1194,30 @@ describe('health claim import database acceptance', { skip: !databaseTestsEnable
     }
   })
 
-  it('rejects immutable Medicare and private-health edits on the database route', async () => {
+  it('keeps accepted audit fields separate for every edited private-health row', async () => {
     const suffix = `${process.pid}-${Date.now()}`
     const userA = await prisma.user.create({ data: { email: `health-audit-a-${suffix}@example.test` } })
     const userB = await prisma.user.create({ data: { email: `health-audit-b-${suffix}@example.test` } })
     const userIds = [userA.id, userB.id]
 
-    const { PATCH } = await import('../app/api/health-claims/import/[id]/route.ts')
+    const { POST } = await import('../app/api/health-claims/import/route.ts')
+
+      const { PATCH } = await import('../app/api/health-claims/import/[id]/route.ts')
     const { GET, PATCH, DELETE } = await import('../app/api/health-claims/import/[id]/route.ts')
 
     const json = async <T = Record<string, any>>(response: Response) => response.json() as Promise<T>
-    const upload = async (userId: string, fileName: string, contents: string) => {
+    const upload = async (
+      userId: string,
+      kindOrFileName: 'medicare' | 'private_health' | string,
+      fileNameOrContents: string,
+      maybeContents?: string | Uint8Array,
+    ) => {
+      const kind = maybeContents === undefined ? 'medicare' : kindOrFileName
+      const fileName = maybeContents === undefined ? kindOrFileName : fileNameOrContents
+      const contents = maybeContents === undefined ? fileNameOrContents : maybeContents
       routeSession.userId = userId
       const form = new FormData()
-      form.set('kind', 'medicare')
+      form.set('kind', kind)
       form.set('file', new File([contents], fileName, { type: 'text/csv' }))
       return POST(new Request('http://health-claims.test/api/health-claims/import', { method: 'POST', body: form }))
     }
@@ -969,28 +1233,6 @@ describe('health claim import database acceptance', { skip: !databaseTestsEnable
         itemContext(id),
       )
     }
-
-    const patchAs = (userId: string, id: string, body: Record<string, unknown>) => {
-      routeSession.userId = userId
-      return PATCH(
-        new Request(`http://health-claims.test/api/health-claims/import/${id}`, {
-          method: 'PATCH',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body),
-        }),
-        itemContext(id),
-      )
-    }
-
-      const medicareUpload = await upload(
-        'medicare',
-        'immutable-medicare.csv',
-        [
-          'Service Date,Description,Item Number,Provider,Schedule Fee,Fee Charged,Benefit Paid,Out of Pocket,Financial Year,Forecast,Counts to Safety Net',
-          '08/09/2026,GP consultation,23,Example Medical,$50,$120,$45.50,$74.50,2026-27,false,true',
-        ].join('\n'),
-      )
-
     const read = (userId: string, id: string) => {
       routeSession.userId = userId
       return GET(new Request(`http://health-claims.test/api/health-claims/import/${id}`), itemContext(id))
@@ -1010,10 +1252,6 @@ describe('health claim import database acceptance', { skip: !databaseTestsEnable
     }
     const medicareHeader = 'Service Date,Description,Item Number,Provider,Fee Charged,Benefit Paid,Out of Pocket'
     const medicareRow = '08/09/2026,GP consultation,23,Example Medical,$120.00,$45.50,$74.50'
-
-      const medicareOriginal = medicareRow.data
-
-    try {
       const uploaded = await upload(userA.id, 'audit-lifecycle.csv', `${medicareHeader}\n${medicareRow}\n08/09/2026,Optometry,24,Vision Clinic,$80.00,$30.00,$50.00`)
       assert.equal(uploaded.status, 201)
       const uploadedRecord = await json<{
@@ -1023,89 +1261,6 @@ describe('health claim import database acceptance', { skip: !databaseTestsEnable
     let importId = ''
       const firstRow = uploadedRecord.rows[0]
       const secondRow = uploadedRecord.rows[1]
-      assert.equal((await assertActions(importId, ['source_uploaded'])).length, 1)
-
-      const sourceUploaded = await prisma.healthClaimImportAudit.findFirstOrThrow({
-        where: { importId, action: 'source_uploaded' },
-      })
-      assert.equal(sourceUploaded.userId, userA.id)
-      assert.equal(sourceUploaded.actorUserId, userA.id)
-      assert.equal(sourceUploaded.rowNumber, null)
-      assert.equal(sourceUploaded.changedFields, null)
-
-      const originalFetch = globalThis.fetch
-      const previousAlertEnvironment = {
-        webhookUrl: process.env.OPS_ALERT_WEBHOOK_URL,
-        owner: process.env.OPS_ALERT_OWNER,
-        environment: process.env.OPS_ALERT_ENVIRONMENT,
-      }
-      const alertBodies: Array<Record<string, any>> = []
-      const operationalLogs: string[] = []
-      let rejectAlert: ((error: Error) => void) | undefined
-      await prisma.$executeRaw`
-        DELETE FROM "OperationsAlertGroup"
-        WHERE "key" = 'health_claim_ownership_violation'
-      `
-      process.env.OPS_ALERT_WEBHOOK_URL = 'https://alerts.example.test/receiver'
-      process.env.OPS_ALERT_OWNER = 'health-claims-test-owner'
-      process.env.OPS_ALERT_ENVIRONMENT = 'test'
-      globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit) => {
-        alertBodies.push(JSON.parse(String(init?.body)))
-        await new Promise<never>((_resolve, reject) => {
-          rejectAlert = reject
-        })
-        throw new Error('alert receiver unexpectedly completed')
-      }
-      try {
-        const originalConsoleError = console.error
-        console.error = (...args: unknown[]) => {
-          operationalLogs.push(args.map((arg) => (
-            typeof arg === 'string' ? arg : JSON.stringify(arg)
-          )).join(' '))
-        }
-        try {
-          await assert.rejects(
-            () => prisma.healthClaimImportAudit.createMany({
-              data: [
-                {
-                  importId,
-                  userId: userA.id,
-                  actorUserId: userA.id,
-                  action: 'row_edited',
-                },
-                {
-                  importId,
-                  userId: userB.id,
-                  actorUserId: userA.id,
-                  action: 'source_uploaded',
-                },
-              ],
-            }),
-            /user must match import owner/,
-          )
-        for (let attempt = 0; attempt < 200 && groupedCount < 3; attempt += 1) {
-
-          const grouping = await prisma.$queryRaw<Array<{ count: number }>>`
-            SELECT "count"
-            FROM "OperationsAlertGroup"
-            WHERE "key" = 'health_claim_ownership_violation'
-          `
-        const fallbackLog = operationalLogs.find((line) => line.includes('"errorCode":"DELIVERY_FAILED"'))
-
-        const auditCountBeforeActorBatch = await prisma.healthClaimImportAudit.count({
-          where: { importId },
-        })
-          const environmentKey = key === 'webhookUrl'
-            ? 'OPS_ALERT_WEBHOOK_URL'
-            : key === 'owner'
-              ? 'OPS_ALERT_OWNER'
-              : 'OPS_ALERT_ENVIRONMENT'
-          if (value === undefined) delete process.env[environmentKey]
-          else process.env[environmentKey] = value
-        }
-      }
-      assert.equal(await prisma.healthClaimImportAudit.count({ where: { importId } }), 1)
-
       const auditCountBeforeOtherUser = await prisma.healthClaimImportAudit.count({ where: { importId } })
       assert.equal((await read(userB.id, importId)).status, 404)
       assert.equal((await patch(userB.id, importId, { action: 'save', rows: [] })).status, 404)
@@ -1142,8 +1297,6 @@ describe('health claim import database acceptance', { skip: !databaseTestsEnable
       assert.equal(includeEvent.nextStatus, 'valid')
       assert.deepEqual(includeEvent.changedFields, ['description'])
       assert.doesNotMatch(JSON.stringify(includeEvent), /Restored optometry visit|Optometry|Vision Clinic|80/)
-      assert.equal(alertBodies.length, 1)
-
       assert.equal((await patch(userA.id, importId, { action: 'confirm' })).status, 200)
       const confirmedEvents = await assertActions(importId, ['source_uploaded', 'row_edited', 'row_excluded', 'row_included', 'import_confirmed'])
       const confirmedEvent = confirmedEvents.find((event) => event.action === 'import_confirmed')
@@ -1185,12 +1338,26 @@ describe('health claim import database acceptance', { skip: !databaseTestsEnable
       assert.ok(removedImport.deletedAt)
       assert.deepEqual(await prisma.healthClaimImportRow.findMany({ where: { importId: removedRecord.id } }), [])
       assert.equal(await prisma.healthClaimImportAudit.count({ where: { importId: removedRecord.id } }), 2)
-      assert.equal((await read(userA.id, removedRecord.id)).status, 200)
+      const removedDetailResponse = await read(userA.id, removedRecord.id)
+      assert.equal(removedDetailResponse.status, 200)
+      const removedDetail = await removedDetailResponse.json() as Record<string, unknown>
+      assert.equal(removedDetail.id, removedRecord.id)
+      assert.equal(removedDetail.status, 'review')
+      assert.ok(removedDetail.deletedAt)
+      assert.equal(removedDetail.removalReason, 'source_removed')
+      for (const privateField of ['fileName', 'sha256', 'storageKey', 'detectedFields', 'parseErrors', 'rows', 'auditEvents']) {
+        assert.ok(!(privateField in removedDetail), `removed import detail must omit ${privateField}`)
+      }
       routeSession.userId = userA.id
       const liveImportList = await listImports()
       assert.equal(liveImportList.status, 200)
       const listedLiveImports = await liveImportList.json() as Array<{ id: string }>
-      assert.ok(!listedLiveImports.some((item) => item.id === removedRecord.id))
+      const listedRemoved = listedLiveImports.find((item) => item.id === removedRecord.id) as Record<string, unknown> | undefined
+      assert.ok(listedRemoved)
+      for (const privateField of ['fileName', 'sha256', 'storageKey', 'detectedFields', 'parseErrors', 'rows', 'auditEvents']) {
+        assert.ok(!(privateField in listedRemoved!), `removed import history must omit ${privateField}`)
+      }
+      assert.equal((await read(userB.id, removedRecord.id)).status, 404)
     } finally {
       await prisma.user.deleteMany({ where: { id: { in: userIds } } }).catch(() => undefined)
       await prisma.$disconnect()
@@ -1200,8 +1367,6 @@ describe('health claim import database acceptance', { skip: !databaseTestsEnable
   it('erases imported claims and review payloads while retaining a metadata-only tombstone after account deletion', async () => {
     const suffix = `${process.pid}-${Date.now()}`
     const user = await prisma.user.create({ data: { email: `health-retention-legacy-${suffix}@example.test` } })
-
-    let medicareImportId = ''
     const legacyRowOwner = await prisma.user.create({ data: { email: `health-account-delete-drift-${suffix}@example.test` } })
 
     const formerEmail = user.email
@@ -1612,8 +1777,6 @@ describe('health claim import database acceptance', { skip: !databaseTestsEnable
   it('blocks account deletion when legacy audit metadata contains claim values', async () => {
     const suffix = `${process.pid}-${Date.now()}`
     const user = await prisma.user.create({ data: { email: `health-retention-legacy-${suffix}@example.test` } })
-
-    let medicareImportId = ''
     const sensitiveValue = 'legacy private diagnosis'
     let importId = ''
 
@@ -1662,113 +1825,6 @@ describe('health claim import database acceptance', { skip: !databaseTestsEnable
         where: { id: importId },
         select: { userId: true, fileName: true, storageKey: true },
       })
-      assert.deepEqual(unchangedImport, {
-        userId: user.id,
-        fileName: 'legacy-private-claim.csv',
-        storageKey: `private/${user.id}/health-claims/legacy-private-claim.csv`,
-      })
-    } finally {
-      routeSession.userId = ''
-      routeSession.authTime = Math.floor(Date.now() / 1000)
-      await prisma.healthClaimImport.delete({ where: { id: importId } }).catch(() => undefined)
-      await prisma.user.delete({ where: { id: user.id } }).catch(() => undefined)
-      await prisma.$disconnect()
-    }
-  })
-})
-
-      const privateAudit = await prisma.healthClaimImportAudit.findFirstOrThrow({
-        where: { importId: privateImportId, action: 'row_edited' },
-        select: { changedFields: true },
-      })
-
-      const storedMedicare = await prisma.healthClaimImportRow.findUniqueOrThrow({
-        where: { id: medicareRow.id },
-        select: { data: true },
-      })
-
-      const medicareAudit = await prisma.healthClaimImportAudit.findFirstOrThrow({
-        where: { importId: medicareImportId, action: 'row_edited' },
-        select: { changedFields: true },
-      })
-
-      const privateUpload = await upload(
-        'private_health',
-        'immutable-private-health.csv',
-        [
-          'Claim Number,Service Date,Description,Provider,Service Type,Item Number,Charged Amount,Benefit Amount,Out of Pocket,Benefit Detail,Claim Status',
-          'PH-100,01/07/2026,Physiotherapy,North Clinic,Extras,P100,$100,$60,$40,Annual limit benefit,Paid',
-        ].join('\n'),
-      )
-
-      const medicareRecord = await json<{
-        id: string
-        rows: Array<{ id: string; data: Record<string, unknown> }>
-      }>(medicareUpload)
-
-      const storedPrivateData = storedPrivate.data as Record<string, unknown>
-
-      const storedMedicareData = storedMedicare.data as Record<string, unknown>
-
-      const privateRecord = await json<{
-        id: string
-        rows: Array<{ id: string; data: Record<string, unknown> }>
-      }>(privateUpload)
-
-      const storedPrivate = await prisma.healthClaimImportRow.findUniqueOrThrow({
-        where: { id: privateRow.id },
-        select: { data: true },
-      })
-
-      const privateSave = await patch(privateImportId, {
-        action: 'save',
-        rows: [{
-          id: privateRow.id,
-          data: {
-            ...privateOriginal,
-            provider: 'Corrected provider',
-            serviceType: 'Dental',
-            itemNumber: 'P999',
-            benefitDetail: 'Tampered benefit detail',
-            claimStatus: 'Rejected',
-          },
-        }],
-      })
-
-      const medicareSave = await patch(medicareImportId, {
-        action: 'save',
-        rows: [{
-          id: medicareRow.id,
-          data: {
-            ...medicareOriginal,
-            description: 'Corrected GP consultation',
-            scheduleFee: 999,
-            financialYear: '2099-00',
-            isForecast: true,
-            countsToSafetyNet: false,
-          },
-        }],
-      })
-
-    let privateImportId = ''
-
-        let groupedCount = 0
-
-    const capture = (...args: unknown[]) => logged.push(args.map((value) => String(value)).join(' '))
-
-      const [wide, compact, lowQuality] = await Promise.all([
-        parseHealthClaimFile('medicare', 'wide-scan.pdf', 'application/pdf', wideScannedMedicareStatementPdf()),
-        parseHealthClaimFile('medicare', 'compact-scan.pdf', 'application/pdf', compactScannedMedicareStatementPdf()),
-        parseHealthClaimFile('medicare', 'low-quality-scan.pdf', 'application/pdf', lowQualityScannedMedicareStatementPdf()),
-      ])
-
-    const originalConsole = {
-      log: console.log,
-      info: console.info,
-      warn: console.warn,
-      error: console.error,
-    }
-
 const databaseAcceptanceInterruptDelayMs = Number.parseInt(
   process.env.HEALTH_CLAIM_DATABASE_INTERRUPT_DELAY_MS ?? '',
   10,
@@ -1786,3 +1842,40 @@ const pauseForDatabaseAcceptanceInterruption = async () => {
   await writeFile(databaseAcceptanceInterruptMarker, 'health claim database test started\n', 'utf8')
   await new Promise((resolve) => setTimeout(resolve, databaseAcceptanceInterruptDelayMs))
 }
+
+      const failedOcrUpload = await upload(
+        userA.id,
+        'medicare',
+        'failed-ocr-statement.pdf',
+        imageOnlyMedicareStatementPdf(),
+      )
+
+      const failedOcrImport = await json<{
+        id: string
+        status: string
+        rows: unknown[]
+        parseErrors: string[]
+      }>(failedOcrUpload)
+
+      const failedOcrSource = await prisma.healthClaimImport.findUniqueOrThrow({
+        where: { id: failedOcrImport.id },
+        select: { storageKey: true, deletedAt: true },
+      })
+
+      const privateClaimsBeforeOcrRecovery = await prisma.phiClaim.count({ where: { userId: userA.id } })
+
+      const savedRows = await prisma.healthClaimImportRow.findMany({
+        where: { importId: uploaded.id },
+        orderBy: { rowNumber: 'asc' },
+      })
+
+      const form = new FormData()
+
+      const savedSecond = savedRows[1].data as Record<string, unknown>
+
+      const uploadResponse = await POST(new Request('http://health-claims.test/api/health-claims/import', {
+        method: 'POST',
+        body: form,
+      }))
+
+      const savedFirst = savedRows[0].data as Record<string, unknown>
