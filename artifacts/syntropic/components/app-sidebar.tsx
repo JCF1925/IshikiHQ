@@ -11,7 +11,7 @@ import {
   Users, GraduationCap, Settings, LogOut, ChevronLeft, ChevronDown,
   Menu, X, Landmark, Repeat, Inbox,
    Coins, Package, Calculator, Building2, Scale, Receipt, FolderTree,
-  CalendarClock, ShieldPlus, FlaskConical, Lightbulb, ChefHat, Box, ShoppingCart, type LucideIcon
+  CalendarClock, ShieldPlus, FlaskConical, Lightbulb, ChefHat, Box, ShoppingCart, ListTree, type LucideIcon
 } from 'lucide-react'
 
 type Leaf = { href: string; label: string; icon: LucideIcon }
@@ -23,6 +23,7 @@ const topItems: Leaf[] = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/tasks', label: 'Tasks', icon: CheckSquare },
   { href: '/events', label: 'Events', icon: Calendar },
+  { href: '/feature-inventory', label: 'Feature inventory', icon: ListTree },
 ]
 
 const groups: Group[] = [
