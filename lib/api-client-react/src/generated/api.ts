@@ -39,6 +39,7 @@ import type {
   MobileDeviceSessionInput,
   MobileEventInput,
   MobileMedicationDoseInput,
+  MobileMedicationHistory,
   MobileMedicationReminder,
   MobileMedicationReminderInput,
   MobileMedicationReminders,
@@ -48,6 +49,7 @@ import type {
   MobileReminderSettingsInput,
   MobileRestoreCaptureInput,
   MobileRestoreCaptureResult,
+  MobileRestoreConflictResponse,
   MobileSession,
   MobileStockLevel,
   MobileStockReconciliationInput,
@@ -535,6 +537,62 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
       return useMutation(getRecordMobileMedicationDoseMutationOptions(options));
     }
 
+export const getGetMobileMedicationHistoryUrl = () => {
+
+
+  return `/api/mobile/medication-history`
+}
+
+export const getMobileMedicationHistory = async ( options?: Parameters<typeof customFetch>[1]): Promise<MobileMedicationHistory> => {
+
+  return customFetch<MobileMedicationHistory>(getGetMobileMedicationHistoryUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+export const getGetMobileMedicationHistoryQueryKey = () => {
+    return [
+    `/api/mobile/medication-history`
+    ] as const;
+    }
+
+
+export const getGetMobileMedicationHistoryQueryOptions = <TData = Awaited<ReturnType<typeof getMobileMedicationHistory>>, TError = ErrorType<UnauthorizedResponse>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getMobileMedicationHistory>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetMobileMedicationHistoryQueryKey();
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getMobileMedicationHistory>>> = ({ signal }) => getMobileMedicationHistory({ signal, ...requestOptions });
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getMobileMedicationHistory>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetMobileMedicationHistoryQueryResult = NonNullable<Awaited<ReturnType<typeof getMobileMedicationHistory>>>
+export type GetMobileMedicationHistoryQueryError = ErrorType<UnauthorizedResponse>
+
+
+export function useGetMobileMedicationHistory<TData = Awaited<ReturnType<typeof getMobileMedicationHistory>>, TError = ErrorType<UnauthorizedResponse>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getMobileMedicationHistory>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetMobileMedicationHistoryQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
 export const getCreateMobileEventUrl = () => {
 
 
@@ -661,7 +719,7 @@ export const restoreMobileCapture = async (mobileRestoreCaptureInput: MobileRest
 );}
 
 
-export const getRestoreMobileCaptureMutationOptions = <TError = ErrorType<BadRequestResponse | UnauthorizedResponse | NotFoundResponse | ConflictResponse>,
+export const getRestoreMobileCaptureMutationOptions = <TError = ErrorType<BadRequestResponse | UnauthorizedResponse | NotFoundResponse | MobileRestoreConflictResponse>,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof restoreMobileCapture>>, TError,{data: BodyType<MobileRestoreCaptureInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
 ): UseMutationOptions<Awaited<ReturnType<typeof restoreMobileCapture>>, TError,{data: BodyType<MobileRestoreCaptureInput>}, TContext> => {
 
@@ -684,9 +742,9 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
     export type RestoreMobileCaptureMutationResult = NonNullable<Awaited<ReturnType<typeof restoreMobileCapture>>>
     export type RestoreMobileCaptureMutationBody = BodyType<MobileRestoreCaptureInput>
-    export type RestoreMobileCaptureMutationError = ErrorType<BadRequestResponse | UnauthorizedResponse | NotFoundResponse | ConflictResponse>
+    export type RestoreMobileCaptureMutationError = ErrorType<BadRequestResponse | UnauthorizedResponse | NotFoundResponse | MobileRestoreConflictResponse>
 
-    export const useRestoreMobileCapture = <TError = ErrorType<BadRequestResponse | UnauthorizedResponse | NotFoundResponse | ConflictResponse>,
+    export const useRestoreMobileCapture = <TError = ErrorType<BadRequestResponse | UnauthorizedResponse | NotFoundResponse | MobileRestoreConflictResponse>,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof restoreMobileCapture>>, TError,{data: BodyType<MobileRestoreCaptureInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
  ): UseMutationResult<
         Awaited<ReturnType<typeof restoreMobileCapture>>,
@@ -761,11 +819,63 @@ export function usePullMobileSync<TData = Awaited<ReturnType<typeof pullMobileSy
   return withQueryKey(query, queryOptions.queryKey);
 }
 
+
 export const getGetMobileSyncHistoryUrl = () => {
 
 
   return `/api/mobile/sync/history`
 }
+
+export const getMobileSyncHistory = async ( options?: Parameters<typeof customFetch>[1]): Promise<MobileSyncHistoryResult> => {
+
+  return customFetch<MobileSyncHistoryResult>(getGetMobileSyncHistoryUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+export const getGetMobileSyncHistoryQueryKey = () => {
+    return [
+    `/api/mobile/sync/history`
+    ] as const;
+    }
+
+
+export const getGetMobileSyncHistoryQueryOptions = <TData = Awaited<ReturnType<typeof getMobileSyncHistory>>, TError = ErrorType<UnauthorizedResponse>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getMobileSyncHistory>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetMobileSyncHistoryQueryKey();
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getMobileSyncHistory>>> = ({ signal }) => getMobileSyncHistory({ signal, ...requestOptions });
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getMobileSyncHistory>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetMobileSyncHistoryQueryResult = NonNullable<Awaited<ReturnType<typeof getMobileSyncHistory>>>
+export type GetMobileSyncHistoryQueryError = ErrorType<UnauthorizedResponse>
+
+
+export function useGetMobileSyncHistory<TData = Awaited<ReturnType<typeof getMobileSyncHistory>>, TError = ErrorType<UnauthorizedResponse>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getMobileSyncHistory>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetMobileSyncHistoryQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
 export const getInitiateMobileUploadUrl = () => {
 
 
@@ -1774,51 +1884,3 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
       > => {
       return useMutation(getReviewMobileAnomalyMutationOptions(options));
     }
-
-
-export type GetMobileSyncHistoryQueryError = ErrorType<UnauthorizedResponse>
-
-export const getMobileSyncHistory = async ( options?: Parameters<typeof customFetch>[1]): Promise<MobileSyncHistoryResult> => {
-
-  return customFetch<MobileSyncHistoryResult>(getGetMobileSyncHistoryUrl(),
-  {
-    ...options,
-    method: 'GET'
-
-
-  }
-);}
-
-export const getGetMobileSyncHistoryQueryKey = () => {
-    return [
-    `/api/mobile/sync/history`
-    ] as const;
-    }
-
-export type GetMobileSyncHistoryQueryResult = NonNullable<Awaited<ReturnType<typeof getMobileSyncHistory>>>
-
-export const getGetMobileSyncHistoryQueryOptions = <TData = Awaited<ReturnType<typeof getMobileSyncHistory>>, TError = ErrorType<UnauthorizedResponse>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getMobileSyncHistory>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
-) => {
-
-const {query: queryOptions, request: requestOptions} = options ?? {};
-
-  const queryKey =  queryOptions?.queryKey ?? getGetMobileSyncHistoryQueryKey();
-
-
-    const queryFn: QueryFunction<Awaited<ReturnType<typeof getMobileSyncHistory>>> = ({ signal }) => getMobileSyncHistory({ signal, ...requestOptions });
-
-
-   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getMobileSyncHistory>>, TError, TData> & { queryKey: QueryKey }
-}
-
-export function useGetMobileSyncHistory<TData = Awaited<ReturnType<typeof getMobileSyncHistory>>, TError = ErrorType<UnauthorizedResponse>>(
-  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getMobileSyncHistory>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
-
- ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
-
-  const queryOptions = getGetMobileSyncHistoryQueryOptions(options)
-
-  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
-
-  return withQueryKey(query, queryOptions.queryKey);
-}
