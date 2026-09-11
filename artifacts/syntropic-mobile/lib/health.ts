@@ -13,6 +13,7 @@ export interface HealthSample {
   endDate: string;
   source: string;
   sourceRevision: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface HealthDeletion {
