@@ -20,8 +20,6 @@ export const healthKitSmokeTypes: HealthType[] = [
 export type HealthKitSmokeResult = {
   type: HealthType;
   authorization: HealthAuthorization;
-  firstAnchor?: string;
-  secondAnchor?: string;
   firstSampleCount: number;
   firstDeletionCount: number;
   secondSampleCount: number;
@@ -34,6 +32,7 @@ export type HealthKitSmokeResult = {
   expectedSampleDelta: number;
   observedSampleDelta: number;
   sampleDeltaPassed: boolean;
+  cleanupWarning?: string;
   error?: string;
 };
 
@@ -47,6 +46,13 @@ export type HealthKitImportCommit = (input: {
   previousAnchor: string | null;
   result: HealthKitReadRecovery;
 }) => Promise<void>;
+
+export type HealthKitBatchImportCommit = (input: {
+  type: HealthType;
+  previousAnchor: string | null;
+  result: HealthKitReadRecovery;
+}) => Promise<void>;
+export type HealthSyncTimestamps = Partial<Record<HealthType, string>>;
 const MAX_READ_ATTEMPTS = 2;
 
 /**
@@ -99,6 +105,64 @@ export async function importHealthKitWithRecovery(
   });
   return result;
 }
+
+/**
+ * Import each authorized type independently. A failed read or commit must
+ * leave that type out of the completed list without preventing later types
+ * from acknowledging their own complete reads.
+ */
+export async function importHealthKitTypesWithRecovery(
+  adapter: HealthAdapter,
+  types: HealthType[],
+  previousAnchors: Partial<Record<HealthType, string>>,
+  commit: HealthKitBatchImportCommit,
+): Promise<{
+  completed: Array<{ type: HealthType; result: HealthKitReadRecovery }>;
+  failures: Array<{ type: HealthType; message: string }>;
+}> {
+  const completed: Array<{ type: HealthType; result: HealthKitReadRecovery }> = [];
+  const failures: Array<{ type: HealthType; message: string }> = [];
+
+  for (const type of types) {
+    try {
+      const result = await importHealthKitWithRecovery(adapter, type, previousAnchors[type], async ({
+        previousAnchor,
+        result: recovered,
+      }) => {
+        await commit({ type, previousAnchor, result: recovered });
+      });
+      completed.push({ type, result });
+    } catch (error) {
+      failures.push({
+        type,
+        message: error instanceof Error ? error.message : 'HealthKit import failed',
+      });
+    }
+  }
+
+  return { completed, failures };
+}
+export async function importHealthKitAndRecordSuccess(
+  adapter: HealthAdapter,
+  type: HealthType,
+  previousAnchor: string | undefined,
+  previousSyncAt: HealthSyncTimestamps,
+  commit: HealthKitImportCommit,
+  now: () => string = () => new Date().toISOString(),
+): Promise<{
+  result: HealthKitReadRecovery;
+  lastSuccessfulSyncAt: HealthSyncTimestamps;
+}> {
+  const result = await importHealthKitWithRecovery(adapter, type, previousAnchor, commit);
+  return {
+    result,
+    lastSuccessfulSyncAt: {
+      ...previousSyncAt,
+      [type]: now(),
+    },
+  };
+}
+
 const summarize = (
   type: HealthType,
   authorization: HealthAuthorization,
@@ -108,8 +172,6 @@ const summarize = (
 ): HealthKitSmokeResult => ({
   type,
   authorization,
-  firstAnchor: first.anchor,
-  secondAnchor: second.anchor,
   firstSampleCount: first.samples.length,
   firstDeletionCount: first.deletions.length,
   secondSampleCount: second.samples.length,
@@ -159,6 +221,7 @@ export async function runHealthKitSmokeTest(
     }
 
     let smokeSampleInserted = false;
+    let cleanupFailed = false;
     let result: HealthKitSmokeResult;
     try {
       const first = await readHealthKitWithRecovery(adapter, type);
@@ -191,9 +254,14 @@ export async function runHealthKitSmokeTest(
         try {
           await adapter.removeSmokeSample();
         } catch {
-          // Preserve the anchored-read result; cleanup is best effort.
+          // Preserve the anchored-read result; cleanup is best effort, but
+          // developers must know that the synthetic sample may remain.
+          cleanupFailed = true;
         }
       }
+    }
+    if (cleanupFailed) {
+      result.cleanupWarning = 'Temporary HealthKit sample could not be removed. It may remain on this device. Anchored-read results are still shown.';
     }
     results.push(result);
   }
