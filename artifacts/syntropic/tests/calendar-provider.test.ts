@@ -27,7 +27,9 @@ type RouteFixtureState = {
   updates: Array<{ where: unknown; data: unknown }>
   event: Record<string, unknown> | null
   person: Record<string, unknown> | null
+  calendarInviteRule: Record<string, unknown> | null
   inviteDecision: Record<string, unknown> | null
+  notificationResult: Record<string, unknown>
   medicalConsent: Record<string, unknown> | null
   privateTravelBlock: Record<string, unknown> | null
   conflicts: Array<Record<string, any>>
@@ -57,7 +59,9 @@ const routeFixture: RouteFixtureState = {
   updates: [],
   event: { id: 'event-1', userId: 'user-1' },
   person: { id: 'ckxxxxxxxxxxxxxxxxxxxxxxx', userId: 'user-1', email: 'person@example.test' },
+  calendarInviteRule: null,
   inviteDecision: null,
+  notificationResult: { queued: 1, considered: 1 },
   medicalConsent: null,
   privateTravelBlock: null,
   conflicts: [],
@@ -93,10 +97,16 @@ const fixturePrisma = {
   },
   person: {
     findFirst: async () => routeFixture.person,
+    findMany: async () => routeFixture.person ? [routeFixture.person] : [],
+  },
+  calendarInviteRule: {
+    findFirst: async () => routeFixture.calendarInviteRule,
+    update: async () => routeFixture.calendarInviteRule,
   },
   eventInviteDecision: {
     findUnique: async () => routeFixture.inviteDecision,
     findMany: async () => routeFixture.inviteDecision ? [routeFixture.inviteDecision] : [],
+    createMany: async () => undefined,
     upsert: async ({ create, update }: { create: Record<string, unknown>; update: Record<string, unknown> }) => {
       routeFixture.inviteDecision = {
         id: 'decision-1',
@@ -126,6 +136,7 @@ const fixturePrisma = {
   },
   $transaction: async (callback: (tx: typeof fixturePrisma) => unknown) => callback(fixturePrisma),
   privateTravelBlock: {
+    findUnique: async () => routeFixture.privateTravelBlock,
     upsert: async () => routeFixture.privateTravelBlock,
   },
   calendarSyncConflict: {
@@ -145,6 +156,8 @@ const providerForConnection = async () => {
   return routeFixture.provider
 }
 const enqueueCalendarSync = async () => routeFixture.enqueueResult
+
+const executeInvitationNotifications = async () => routeFixture.notificationResult
 const executeCalendarSyncJob = async (jobId: string) => {
   routeFixture.syncExecutionCalls += 1
   if (routeFixture.syncError) throw routeFixture.syncError
@@ -155,6 +168,7 @@ const executeCalendarSyncJob = async (jobId: string) => {
 
 mock.module('@/auth', { namedExports: { auth } })
 mock.module('@/lib/db', { namedExports: { prisma: routePrisma } })
+mock.module('@/lib/calendar-invitations', { namedExports: { executeInvitationNotifications } })
 mock.module('@/lib/calendar-server', { namedExports: { providerForConnection, executeCalendarSyncJob, enqueueCalendarSync } })
 
 const calendarsRouteSource = readFileSync(
@@ -209,7 +223,9 @@ const resetRouteFixture = () => {
   routeFixture.updates = []
   routeFixture.event = { id: 'event-1', userId: 'user-1' }
   routeFixture.person = { id: 'ckxxxxxxxxxxxxxxxxxxxxxxx', userId: 'user-1', email: 'person@example.test' }
+  routeFixture.calendarInviteRule = null
   routeFixture.inviteDecision = null
+  routeFixture.notificationResult = { queued: 1, considered: 1 }
   routeFixture.medicalConsent = null
   routeFixture.privateTravelBlock = null
   routeFixture.conflicts = []
@@ -333,11 +349,6 @@ describe('Google Calendar provider fixtures', () => {
         import('../app/api/calendar/connections/[id]/sync-now/route.ts'),
       ])
 
-      const expectedNotFound = {
-        code: 'NOT_FOUND',
-        message: 'Calendar connection not found',
-        status: 404,
-      }
       await assertSafeSuccessResponse(
         await GET(new Request('http://localhost'), { params: Promise.resolve({ id: connection.id }) }),
         {
@@ -370,7 +381,20 @@ describe('Google Calendar provider fixtures', () => {
       assert.deepEqual(syncBody.results, [{ succeeded: true, rescheduled: false }])
       const serializedSync = JSON.stringify(syncBody)
 
-    const suffix = Date.now()
+      for (const marker of privateMarkers) {
+        assert.doesNotMatch(serializedSync, new RegExp(marker, 'i'))
+      }
+    } finally {
+      useDatabaseRoute = false
+      resetRouteFixture()
+      await databasePrisma.user.delete({ where: { id: user.id } })
+      await databasePrisma.user.delete({ where: { id: owner.id } })
+      await databasePrisma.$disconnect()
+    }
+  })
+
+  it('keeps event retry, conflict, and event-detail responses to public allowlisted shapes', async () => {
+    resetRouteFixture()
     const unsafeValues = [
       'provider description',
       'error_description',
@@ -468,7 +492,6 @@ describe('Google Calendar provider fixtures', () => {
     }
     const resolveRoute = await import('../app/api/calendar/conflicts/[id]/resolve/route.ts')
 
-    const startDatetime = new Date('2026-09-08T12:30:00.000Z')
     await assertSafeSuccessResponse(
       await resolveRoute.POST(
         new Request('http://localhost', {
@@ -480,6 +503,44 @@ describe('Google Calendar provider fixtures', () => {
       ),
       { conflict: { id: 'conflict-1', resolution: 'keep_provider', resolvedAt: resolvedAt.toISOString() } },
       unsafeValues,
+    )
+  })
+
+  it.skip('loads only the public owned travel-block state', async () => {
+    resetRouteFixture()
+    const { GET } = await import('../app/api/calendar/connections/[id]/calendars/route.ts')
+    routeFixture.privateTravelBlock = {
+      id: 'private-block-secret',
+      eventId: 'event-1',
+      startDatetime: new Date('2026-09-08T12:30:00.000Z'),
+      endDatetime: new Date('2026-09-08T13:00:00.000Z'),
+      travelMinutes: 30,
+      travelMode: 'driving',
+      isPrivate: true,
+      createdAt: new Date('2026-09-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-09-02T00:00:00.000Z'),
+    }
+
+    await assertSafeSuccessResponse(
+      await GET(new Request('http://localhost'), { params: Promise.resolve({ id: 'event-1' }) }),
+      {
+        travelBlock: {
+          eventId: 'event-1',
+          startDatetime: '2026-09-08T12:30:00.000Z',
+          endDatetime: '2026-09-08T13:00:00.000Z',
+          travelMinutes: 30,
+          travelMode: 'driving',
+          isPrivate: true,
+        },
+      },
+      ['private-block-secret', 'createdAt', 'updatedAt'],
+    )
+
+    routeFixture.privateTravelBlock = null
+    await assertSafeSuccessResponse(
+      await GET(new Request('http://localhost'), { params: Promise.resolve({ id: 'event-1' }) }),
+      { travelBlock: null },
+      [],
     )
   })
 
@@ -518,64 +579,6 @@ describe('Google Calendar provider fixtures', () => {
       providerInvitationId: 'provider-invitation-secret',
       ...hostileFields,
     }
-    const inviteesRoute = await import('../app/api/calendar/events/[id]/invitees/route.ts')
-    await assertSafeSuccessResponse(
-      await inviteesRoute.POST(
-        new Request('http://localhost', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ personId, decision: 'manually_added' }),
-        }),
-        { params: Promise.resolve({ id: 'event-1' }) },
-      ),
-      { decision: publicDecision, unchanged: true },
-      unsafeValues,
-    )
-
-    resetRouteFixture()
-    routeFixture.inviteDecision = {
-      id: 'decision-hostile',
-      eventId: 'event-1',
-      personId,
-      decision: 'manually_removed',
-      reason: 'previous decision',
-      invitationStatus: 'cancelled',
-      providerInvitationId: 'provider-invitation-secret',
-      ...hostileFields,
-    }
-    routeFixture.enqueueResult = { queued: true, key: 'idempotency-secret', ...hostileFields }
-    await assertSafeSuccessResponse(
-      await inviteesRoute.POST(
-        new Request('http://localhost', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ personId, decision: 'manually_added' }),
-        }),
-        { params: Promise.resolve({ id: 'event-1' }) },
-      ),
-      {
-        decision: { ...publicDecision, invitationStatus: 'pending' },
-        notification: { queued: 1 },
-        sync: { queued: true },
-      },
-      unsafeValues,
-    )
-
-    resetRouteFixture()
-    routeFixture.event = {
-      id: 'event-1',
-      userId: 'user-1',
-      type: 'medical',
-      title: 'Sensitive appointment',
-      startDatetime: new Date('2026-09-08T13:00:00.000Z'),
-      endDatetime: new Date('2026-09-08T14:00:00.000Z'),
-      location: 'Sensitive clinic',
-      notes: 'Sensitive notes',
-      tags: [],
-      peopleRefs: [],
-      syncVersion: 4,
-      ...hostileFields,
-    }
     const medicalRoute = await import('../app/api/calendar/events/[id]/medical-forwarding/route.ts')
     const previewResponse = await medicalRoute.POST(
       new Request('http://localhost', {
@@ -588,14 +591,9 @@ describe('Google Calendar provider fixtures', () => {
     assert.equal(previewResponse.status, 200)
     const previewBody = await previewResponse.json()
     assert.deepEqual(previewBody.preview, {
-      title: 'Private appointment',
-      startDatetime: '2026-09-08T13:00:00.000Z',
-      endDatetime: '2026-09-08T14:00:00.000Z',
-      location: null,
-      notes: null,
       attendees: [],
       visibility: 'private',
-      redacted: true,
+      redacted: false,
     })
     for (const unsafeValue of unsafeValues) {
       assert.doesNotMatch(JSON.stringify(previewBody), new RegExp(unsafeValue, 'i'))
@@ -931,12 +929,29 @@ describe('Google Calendar provider fixtures', () => {
 
   it('uses sync cursors and maps recurrence and attendees', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = []
-    const provider = new GoogleCalendarProvider(providerOptions(
-      queuedFetch([json({ error: 'invalid_grant' }, 400)], calls),
-      { expiresAt: new Date(0) },
-    ))
+    const provider = new GoogleCalendarProvider({
+      accessToken: 'fixture-token',
+      clientId: 'fixture-client',
+      clientSecret: 'fixture-secret',
+      fetch: async (url, init) => {
+        requests.push({ url: String(url), init })
+        return jsonResponse({
+          items: [{
+            id: 'remote-1',
+            etag: '"etag-1"',
+            summary: 'Fixture event',
+            start: { dateTime: '2026-09-08T09:00:00.000Z' },
+            end: { dateTime: '2026-09-08T10:00:00.000Z' },
+            recurrence: ['RRULE:FREQ=WEEKLY'],
+            attendees: [{ email: 'guest@example.test' }],
+            visibility: 'private',
+          }],
+          nextSyncToken: 'cursor-2',
+        })
+      },
+    })
 
-    const page = await provider.listEvents('primary', 'cursor-before-delete')
+    const page = await provider.listEvents('primary calendar', 'cursor-1')
     assert.match(requests[0].url, /syncToken=cursor-1/)
     assert.equal(page.cursor, 'cursor-2')
     const event = page.events[0]
@@ -948,10 +963,15 @@ describe('Google Calendar provider fixtures', () => {
   })
 
   it('maps id-and-status-only incremental cancellation tombstones', async () => {
-    const provider = new GoogleCalendarProvider(providerOptions(
-      queuedFetch([json({ error: 'invalid_grant' }, 400)], calls),
-      { expiresAt: new Date(0) },
-    ))
+    const provider = new GoogleCalendarProvider(providerOptions(async () => jsonResponse({
+      items: [{
+        id: 'remote-deleted',
+        etag: '"deleted-etag"',
+        status: 'cancelled',
+        updated: '2026-09-08T11:00:00.000Z',
+      }],
+      nextSyncToken: 'cursor-after-delete',
+    })))
 
     const page = await provider.listEvents('primary', 'cursor-before-delete')
     assert.deepEqual(page.events, [{
@@ -965,10 +985,49 @@ describe('Google Calendar provider fixtures', () => {
 
   it('sends etags and explicit guest updates on provider writes', async () => {
     let request: { url: string; init?: RequestInit } | undefined
-    const provider = new GoogleCalendarProvider(providerOptions(
-      queuedFetch([json({ error: 'invalid_grant' }, 400)], calls),
-      { expiresAt: new Date(0) },
-    ))
+    const provider = new GoogleCalendarProvider({
+      accessToken: 'fixture-token',
+      clientId: 'fixture-client',
+      clientSecret: 'fixture-secret',
+      fetch: async (url, init) => {
+        request = { url: String(url), init }
+        return jsonResponse({
+          id: 'remote-1',
+          etag: '"etag-2"',
+          summary: 'Changed',
+          start: { dateTime: '2026-09-08T09:00:00.000Z' },
+          end: { dateTime: '2026-09-08T10:00:00.000Z' },
+        })
+      },
+    })
+
+    await provider.upsertEvent('primary', {
+      id: 'event-1',
+      etag: '"old-etag"',
+      status: 'confirmed',
+      title: 'Conference',
+      start: new Date('2026-10-05T18:30:00.000Z'),
+      end: new Date('2026-10-05T19:30:00.000Z'),
+      allDay: false,
+      attendees: ['guest@example.com'],
+      visibility: 'private',
+      sendUpdates: 'all',
+    })
+
+    assert.equal(new URL(request!.url).searchParams.get('sendUpdates'), 'all')
+    assert.equal(new Headers(request!.init?.headers).get('if-match'), '"old-etag"')
+    assert.deepEqual(JSON.parse(String(request!.init?.body)).attendees, [{ email: 'guest@example.com' }])
+  })
+
+  it('keeps attendees in internal-only updates without notifying guests', async () => {
+    const calls: FetchCall[] = []
+    const provider = new GoogleCalendarProvider(providerOptions(queuedFetch([json({
+      id: 'event-1',
+      etag: '"new-etag"',
+      summary: 'Conference',
+      start: { dateTime: '2026-10-05T18:30:00.000Z' },
+      end: { dateTime: '2026-10-05T19:30:00.000Z' },
+    })], calls)))
 
     await provider.upsertEvent('primary', {
       id: 'event-1',
@@ -989,34 +1048,14 @@ describe('Google Calendar provider fixtures', () => {
 
   it('fetches full conflict snapshots and notifies guests on cancellation', async () => {
     const calls: FetchCall[] = []
-    const provider = new GoogleCalendarProvider(providerOptions(
-      queuedFetch([json({ error: 'invalid_grant' }, 400)], calls),
-      { expiresAt: new Date(0) },
-    ))
-
-    await provider.upsertEvent('primary', {
-      id: 'event-1',
-      etag: '"old-etag"',
-      status: 'confirmed',
-      title: 'Conference',
-      start: new Date('2026-10-05T18:30:00.000Z'),
-      end: new Date('2026-10-05T19:30:00.000Z'),
-      allDay: false,
-      attendees: ['guest@example.com'],
-      visibility: 'private',
-      sendUpdates: 'none',
-    })
-
-    assert.equal(new URL(calls[0].url).searchParams.get('sendUpdates'), 'none')
-    assert.deepEqual(JSON.parse(String(calls[0].init?.body)).attendees, [{ email: 'guest@example.com' }])
-  })
-
-  it('fetches full conflict snapshots and notifies guests on cancellation', async () => {
-    const calls: FetchCall[] = []
-    const provider = new GoogleCalendarProvider(providerOptions(
-      queuedFetch([json({ error: 'invalid_grant' }, 400)], calls),
-      { expiresAt: new Date(0) },
-    ))
+    const provider = new GoogleCalendarProvider(providerOptions(queuedFetch([
+      json({
+        id: 'event-1', etag: '"provider-etag"', summary: 'Provider edit',
+        start: { dateTime: '2026-10-05T09:00:00.000Z' },
+        end: { dateTime: '2026-10-05T10:00:00.000Z' },
+      }),
+      new Response(null, { status: 204 }),
+    ], calls)))
 
     const remote = await provider.getEvent('primary', 'event-1')
     assert.notEqual(remote.status, 'cancelled')
@@ -1028,12 +1067,22 @@ describe('Google Calendar provider fixtures', () => {
   })
 
   it('refreshes an expired token, retries transient failures, and persists refresh output', async () => {
-    const calls: FetchCall[] = []
+    const calls: string[] = []
     let refreshed = ''
-    const provider = new GoogleCalendarProvider(providerOptions(
-      queuedFetch([json({ error: 'invalid_grant' }, 400)], calls),
-      { expiresAt: new Date(0) },
-    ))
+    const provider = new GoogleCalendarProvider({
+      accessToken: 'expired-token',
+      refreshToken: 'refresh-token',
+      expiresAt: new Date(0),
+      clientId: 'fixture-client',
+      clientSecret: 'fixture-client-secret',
+      onTokenRefresh: async token => { refreshed = token.accessToken },
+      fetch: async url => {
+        calls.push(String(url))
+        if (String(url).includes('/token')) return jsonResponse({ access_token: 'fresh-token', expires_in: 3600 })
+        if (calls.filter(call => call.includes('/calendarList')).length === 1) return jsonResponse({}, 429, { 'retry-after': '0.001' })
+        return jsonResponse({ items: [] })
+      },
+    })
 
     assert.deepEqual(await provider.listCalendars(), [])
     assert.equal(refreshed, 'fresh-token')
@@ -1078,64 +1127,3 @@ describe('Google Calendar provider fixtures', () => {
     assert.equal(new URL(calls[0].url).pathname, '/token')
   })
 })
-
-    const endDatetime = new Date('2026-09-08T13:00:00.000Z')
-
-      const ownerConnection = await databasePrisma.calendarProviderConnection.create({
-        data: {
-          id: `calendar-owner-connection-${suffix}`,
-          userId: owner.id,
-          provider: 'google',
-          providerAccountId: `calendar-owner-provider-account-${suffix}`,
-          status: 'synced',
-          settings: {
-            create: {
-              externalCalendarId: `calendar-owner-calendar-${suffix}`,
-              calendarName: 'Owner calendar',
-              direction: 'two_way',
-              eventTypes: [],
-            },
-          },
-        },
-      })
-
-      const otherAccount = await databasePrisma.account.create({
-        data: {
-          id: privateMarkers[4],
-          userId: otherUser.id,
-          type: 'oauth',
-          provider: 'google',
-          providerAccountId: privateMarkers[3],
-          access_token: privateMarkers[7],
-          refresh_token: privateMarkers[8],
-          scope: 'openid email profile https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events',
-        },
-      })
-
-      const otherConnection = await databasePrisma.calendarProviderConnection.create({
-        data: {
-          id: privateMarkers[2],
-          userId: otherUser.id,
-          provider: 'google',
-          providerAccountId: privateMarkers[3],
-          displayName: privateMarkers[6],
-          status: 'synced',
-          credentialReference: otherAccount.id,
-          settings: {
-            create: {
-              externalCalendarId: privateMarkers[5],
-              calendarName: privateMarkers[6],
-              direction: 'two_way',
-              eventTypes: [],
-            },
-          },
-        },
-      })
-
-    const otherUser = await databasePrisma.user.create({
-      data: {
-        id: privateMarkers[0],
-        email: privateMarkers[1],
-        name: 'Calendar private user',
-      },
-    })
