@@ -45,6 +45,7 @@ export type ApiConflict = ApiError & {
   conflict?: ApiConflictConflict;
 };
 
+export type MobileRestoreUnavailableErrorErrorCode = typeof MobileRestoreUnavailableErrorErrorCode[keyof typeof MobileRestoreUnavailableErrorErrorCode];
 export type MobileDeviceSessionInputPlatform = typeof MobileDeviceSessionInputPlatform[keyof typeof MobileDeviceSessionInputPlatform];
 
 
@@ -149,6 +150,41 @@ export interface MobileMedicationDoseInput {
   status: MobileMedicationDoseInputStatus;
   dose?: string;
   reason?: string;
+}
+
+export type MobileMedicationHistoryEntryStatus = typeof MobileMedicationHistoryEntryStatus[keyof typeof MobileMedicationHistoryEntryStatus];
+
+
+export const MobileMedicationHistoryEntryStatus = {
+  taken: 'taken',
+  skipped: 'skipped',
+} as const;
+
+export type MobileMedicationHistoryEntryKind = typeof MobileMedicationHistoryEntryKind[keyof typeof MobileMedicationHistoryEntryKind];
+
+
+export const MobileMedicationHistoryEntryKind = {
+  scheduled: 'scheduled',
+  unscheduled: 'unscheduled',
+} as const;
+
+export interface MobileMedicationHistoryEntry {
+  id: string;
+  medicationId: string;
+  medicationLabel: string;
+  /** @nullable */
+  scheduleId: string | null;
+  takenAt: string;
+  /** @nullable */
+  dose: string | null;
+  status: MobileMedicationHistoryEntryStatus;
+  /** @nullable */
+  skipReason: string | null;
+  kind: MobileMedicationHistoryEntryKind;
+}
+
+export interface MobileMedicationHistory {
+  entries: MobileMedicationHistoryEntry[];
 }
 
 export interface MobileEventInput {
@@ -262,6 +298,37 @@ export interface MobileSyncPullResult {
 }
 
 export type MobileSyncHistoryEntryEntityType = typeof MobileSyncHistoryEntryEntityType[keyof typeof MobileSyncHistoryEntryEntityType];
+
+
+export const MobileSyncHistoryEntryEntityType = {
+  transaction: 'transaction',
+  task: 'task',
+  vital: 'vital',
+  medicationDose: 'medicationDose',
+  event: 'event',
+} as const;
+
+export type MobileSyncHistoryEntryStatus = typeof MobileSyncHistoryEntryStatus[keyof typeof MobileSyncHistoryEntryStatus];
+
+
+export const MobileSyncHistoryEntryStatus = {
+  applied: 'applied',
+  deleted: 'deleted',
+} as const;
+
+export interface MobileSyncHistoryEntry {
+  changeId: string;
+  entityType: MobileSyncHistoryEntryEntityType;
+  entityId: string;
+  status: MobileSyncHistoryEntryStatus;
+  version: number;
+  changedAt: string;
+}
+
+export interface MobileSyncHistoryResult {
+  entries: MobileSyncHistoryEntry[];
+}
+
 export interface MobileUploadInput {
   fileName: string;
   contentType: string;
@@ -667,6 +734,10 @@ export type NotFoundResponse = ApiError;
  */
 export type ConflictResponse = ApiConflict;
 
+/**
+ * Restore version conflict or an unavailable legacy capture payload
+ */
+export type MobileRestoreConflictResponse = ApiConflict | MobileRestoreUnavailableError;
 export type IdempotencyKeyParameter = string;
 
 export type PullMobileSyncParams = {
@@ -691,30 +762,18 @@ export const ListMobileAnomaliesStatus = {
   dismissed: 'dismissed',
 } as const;
 
-export const MobileSyncHistoryEntryEntityType = {
-  transaction: 'transaction',
-  task: 'task',
-  vital: 'vital',
-  medicationDose: 'medicationDose',
-  event: 'event',
+
+export const MobileRestoreUnavailableErrorErrorCode = {
+  restore_unavailable: 'restore_unavailable',
 } as const;
 
-export type MobileSyncHistoryEntryStatus = typeof MobileSyncHistoryEntryStatus[keyof typeof MobileSyncHistoryEntryStatus];
+export type MobileRestoreUnavailableErrorError = {
+  code: MobileRestoreUnavailableErrorErrorCode;
+  message: string;
+  requestId: string;
+  details?: unknown;
+};
 
-export interface MobileSyncHistoryEntry {
-  changeId: string;
-  entityType: MobileSyncHistoryEntryEntityType;
-  entityId: string;
-  status: MobileSyncHistoryEntryStatus;
-  version: number;
-  changedAt: string;
+export interface MobileRestoreUnavailableError {
+  error: MobileRestoreUnavailableErrorError;
 }
-
-export interface MobileSyncHistoryResult {
-  entries: MobileSyncHistoryEntry[];
-}
-
-export const MobileSyncHistoryEntryStatus = {
-  applied: 'applied',
-  deleted: 'deleted',
-} as const;
