@@ -8,7 +8,7 @@ export async function getRefillForecasts(userId: string, now = new Date()) {
       stockLevels: true,
       dosageSchedules: { where: { isActive: true } },
       prescriptions: true,
-      pharmacyPreferences: { include: { pharmacy: true } },
+      pharmacyPreferences: { where: { pharmacy: { isActive: true } }, include: { pharmacy: true } },
     },
   })
 
@@ -33,9 +33,9 @@ export async function getRefillForecasts(userId: string, now = new Date()) {
         startDate: schedule.startDate,
         endDate: schedule.endDate,
       })),
-      logs: logs.flatMap(log => log.scheduleId
-        ? [{ ...log, takenAt: log.takenAt, scheduleId: log.scheduleId }]
-        : []),
+      logs: logs
+        .filter((log): log is typeof log & { scheduleId: string } => log.scheduleId !== null)
+        .map(log => ({ ...log, scheduleId: log.scheduleId })),
       prescriptions: medication.prescriptions.map(prescription => ({
         quantity: prescription.quantity,
         repeats: prescription.repeats,
