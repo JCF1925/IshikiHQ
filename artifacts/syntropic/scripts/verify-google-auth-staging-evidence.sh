@@ -17,6 +17,7 @@ record_file="${AUTH_REGRESSION_RELEASE_RECORD_FILE:-$release_dir/google-auth-sta
 
 RELEASE_DIR="$release_dir" RECORD_FILE="$record_file" node <<'NODE'
 const fs = require('node:fs')
+const crypto = require('node:crypto')
 const path = require('node:path')
 
 const releaseDir = process.env.RELEASE_DIR
@@ -25,6 +26,7 @@ const errors = []
 const statuses = { passed: 0, failed: 0, unknown: 0 }
 let acceptedPath = null
 let acceptedStatus = null
+let acceptedSha256 = null
 
 const fail = (reason) => errors.push(reason)
 const isPlainObject = (value) =>
@@ -60,6 +62,8 @@ const isTimestamp = (value) =>
   typeof value === 'string'
   && Number.isFinite(Date.parse(value))
   && new Date(value).toISOString() === value
+const isSha256 = (value) => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+const sha256File = (filePath) => crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex')
 const isSafeEvidence = (value) => {
   if (!exactKeys(value, [
     'callbackObserved',
@@ -125,8 +129,13 @@ try {
 }
 
 let attempts = []
-if (exactKeys(record, ['acceptedAttemptPath', 'attempts', 'schemaVersion'], 'release record')) {
-  if (record.schemaVersion !== 1) fail('release record schema version is unsupported')
+if (exactKeys(record, [
+  'acceptedAttemptPath',
+  'acceptedAttemptSha256',
+  'attempts',
+  'schemaVersion',
+], 'release record')) {
+  if (record.schemaVersion !== 2) fail('release record schema version is unsupported')
   if (!Array.isArray(record.attempts) || record.attempts.length === 0) {
     fail('release record must list at least one attempt')
   } else {
@@ -137,12 +146,18 @@ if (exactKeys(record, ['acceptedAttemptPath', 'attempts', 'schemaVersion'], 'rel
   } else {
     acceptedPath = path.resolve(record.acceptedAttemptPath)
   }
+  if (!isSha256(record.acceptedAttemptSha256)) {
+    fail('release record accepted attempt digest is malformed')
+  } else {
+    acceptedSha256 = record.acceptedAttemptSha256
+  }
 }
 
 const attemptPaths = new Set()
+const attemptDigests = new Map()
 for (const [index, attempt] of attempts.entries()) {
   const label = `attempt ${index + 1}`
-  if (!exactKeys(attempt, ['path', 'status'], label)) continue
+  if (!exactKeys(attempt, ['path', 'sha256', 'status'], label)) continue
   if (!isReleaseAttemptPath(attempt.path)) {
     fail(`${label} path is outside the current release directory`)
     continue
@@ -153,6 +168,10 @@ for (const [index, attempt] of attempts.entries()) {
     continue
   }
   attemptPaths.add(attemptPath)
+  if (!isSha256(attempt.sha256)) {
+    fail(`${label} content digest is malformed`)
+    continue
+  }
   if (attempt.status !== 'passed' && attempt.status !== 'failed') {
     statuses.unknown += 1
     fail(`${label} status is not passed or failed`)
@@ -162,6 +181,23 @@ for (const [index, attempt] of attempts.entries()) {
   if (!isRegular0600(attemptPath)) {
     fail(`${label} evidence file is missing or not mode 0600`)
     continue
+  }
+
+  let actualSha256
+  try {
+    actualSha256 = sha256File(attemptPath)
+  } catch {
+    fail(`${label} evidence file cannot be hashed`)
+    continue
+  }
+  if (attempt.sha256 !== actualSha256) {
+    fail(`${label} content digest does not match the release record`)
+  }
+  const duplicatePath = attemptDigests.get(actualSha256)
+  if (duplicatePath) {
+    fail(`${label} content is duplicated at another retained path`)
+  } else {
+    attemptDigests.set(actualSha256, attemptPath)
   }
 
   let evidence
@@ -185,7 +221,9 @@ if (acceptedPath === null || !isReleaseAttemptPath(acceptedPath)) {
   fail('accepted attempt path is outside the current release directory')
 } else {
   const acceptedEntry = attempts.find((attempt) => (
-    isPlainObject(attempt) && attempt.path === acceptedPath
+    isPlainObject(attempt)
+      && typeof attempt.path === 'string'
+      && path.resolve(attempt.path) === acceptedPath
   ))
   if (!acceptedEntry) {
     fail('accepted attempt is not listed in the release record')
@@ -193,6 +231,9 @@ if (acceptedPath === null || !isReleaseAttemptPath(acceptedPath)) {
     acceptedStatus = acceptedEntry.status
     if (acceptedStatus !== 'passed') {
       fail('accepted attempt status is not passed')
+    }
+    if (acceptedEntry.sha256 !== acceptedSha256) {
+      fail('accepted attempt digest does not match the approved metadata')
     }
   }
   if (!attemptPaths.has(acceptedPath)) {
