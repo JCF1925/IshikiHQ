@@ -22,6 +22,7 @@ import {
   updateMobileMedicationReminder,
   updateMobilePushReminders,
   uploadMobileUploadContent,
+  type MobileRestoreUnavailableError as MobileRestoreUnavailableApiError,
   type MobileSyncHistoryEntry,
   type MobileMedicationReminders,
 } from '@workspace/api-client-react';
@@ -41,9 +42,12 @@ export interface QueueItem {
   id: string;
   idempotencyKey: string;
   kind: CaptureKind;
+  operation?: 'upsert' | 'delete';
+  entityId?: string;
   title: string;
   detail?: string;
   occurredAt: string;
+  changedAt?: string;
   amount?: number;
   currency?: string;
   vitalType?: string;
@@ -68,6 +72,15 @@ export interface RemoteChange {
   baseVersion?: number;
   payload: Record<string, unknown>;
   changedAt: string;
+}
+
+export class RestoreUnavailableError extends Error {
+  readonly code = 'restore_unavailable' as const;
+
+  constructor(message = 'This deleted capture no longer has a recoverable payload') {
+    super(message);
+    this.name = 'RestoreUnavailableError';
+  }
 }
 export type SyncHistoryStatus = 'applied' | 'conflicted' | 'rejected' | 'deleted';
 export interface SyncHistoryItem {
@@ -97,10 +110,22 @@ interface AppContextValue {
   enqueue(input: Omit<QueueItem, 'id' | 'idempotencyKey' | 'state'>): Promise<void>;
   retry(id: string): Promise<void>;
   remove(id: string): Promise<void>;
+  updateMedicationDose(input: {
+    entityId: string;
+    serverVersion: number;
+    title: string;
+    medicationId: string;
+    takenAt: string;
+    dose?: string;
+    status: 'taken' | 'skipped';
+    detail?: string;
+  }): Promise<void>;
+  deleteMedicationDose(input: { entityId: string; serverVersion: number }): Promise<void>;
   syncNow(): Promise<void>;
   restoreCapture(entityId: string, expectedVersion: number): Promise<void>;
   enableReminders(): Promise<'granted' | 'denied'>;
   medicationReminders: MobileMedicationReminders | null;
+  medicationRefreshState: 'idle' | 'loading' | 'ready' | 'error';
   refreshMedicationReminders(): Promise<void>;
   setMedicationReminder(scheduleId: string, enabled: boolean, revealName: boolean): Promise<void>;
   setMedicationQuietHours(quietHoursStart: string | null, quietHoursEnd: string | null): Promise<void>;
@@ -233,9 +258,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const invalidatedRef = useRef(false);
   const activeTokenRef = useRef<string | null>(null);
   const invalidatingRef = useRef(false);
+  const sessionGenerationRef = useRef(0);
+  const authStorageQueueRef = useRef(Promise.resolve());
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [biometricEnabled, setBiometricEnabledState] = useState(false);
   const [medicationReminders, setMedicationReminders] = useState<MobileMedicationReminders | null>(null);
+  const [medicationRefreshState, setMedicationRefreshState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+
+  const enqueueAuthStorage = useCallback(async (work: () => Promise<void>) => {
+    const previous = authStorageQueueRef.current;
+    let release!: () => void;
+    authStorageQueueRef.current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      await work();
+    } finally {
+      release();
+    }
+  }, []);
 
   const persistQueue = useCallback(async (next: QueueItem[]) => {
     setQueue(next);
@@ -262,7 +304,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const cachedMedicationOptions = storedMedicationOptions
         ? JSON.parse(storedMedicationOptions) as { email: string; options: MobileMedicationReminders }
         : null;
-      setMedicationReminders(getCachedMedicationOptions(cachedMedicationOptions, storedAccount?.email));
+      const cachedOptions = getCachedMedicationOptions(cachedMedicationOptions, storedAccount?.email);
+      setMedicationReminders(cachedOptions);
+      setMedicationRefreshState(cachedOptions ? 'ready' : 'idle');
       const storedRemote = await AsyncStorage.getItem(REMOTE_CHANGES_KEY);
       setRemoteChanges(storedRemote ? JSON.parse(storedRemote) as RemoteChange[] : []);
       setBiometricEnabledState(bio === 'true');
@@ -295,12 +339,25 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       deviceName: Constants.deviceName ?? 'Ishiki mobile',
       appVersion: Constants.expoConfig?.version,
     });
-    await secureSet(VAULT_KEY, JSON.stringify({ email: nextEmail.trim(), token: deviceSession.accessToken }), {
-      keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-    });
+    const previousToken = activeTokenRef.current;
+    sessionGenerationRef.current += 1;
+    // Mark the replacement token active before waiting on storage so a late
+    // failure from the previous token cannot start another invalidation.
+    activeTokenRef.current = deviceSession.accessToken;
+    try {
+      await enqueueAuthStorage(() => secureSet(
+        VAULT_KEY,
+        JSON.stringify({ email: nextEmail.trim(), token: deviceSession.accessToken }),
+        { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY },
+      ));
+    } catch (error) {
+      if (activeTokenRef.current === deviceSession.accessToken) {
+        activeTokenRef.current = previousToken;
+      }
+      throw error;
+    }
     invalidatingRef.current = false;
     invalidatedRef.current = false;
-    activeTokenRef.current = deviceSession.accessToken;
     setAuthTokenGetter(async () => deviceSession.accessToken);
     setEmail(nextEmail.trim());
     setSyncStatus('idle');
@@ -310,9 +367,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setSyncStatus('idle');
     setSyncHistoryLoading(false);
     setMedicationReminders(null);
-    await secureDelete(MEDICATION_OPTIONS_KEY);
+    setMedicationRefreshState('idle');
+    await enqueueAuthStorage(() => secureDelete(MEDICATION_OPTIONS_KEY));
     setSession(true);
-  }, []);
+  }, [enqueueAuthStorage]);
 
   const unlock = useCallback(async () => {
     if (!biometricAvailable || !biometricEnabled) return false;
@@ -326,21 +384,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return result.success;
   }, [biometricAvailable, biometricEnabled]);
 
-  const invalidateSession = useCallback(async () => {
-    if (invalidatingRef.current) return;
+  const invalidateSession = useCallback(async (expectedToken: string) => {
+    if (invalidatingRef.current || expectedToken !== activeTokenRef.current) return;
     invalidatingRef.current = true;
+    const invalidationGeneration = sessionGenerationRef.current;
     activeTokenRef.current = null;
     invalidatedRef.current = true;
     setAuthTokenGetter(null);
     await Promise.allSettled([
-      secureDelete(VAULT_KEY),
-      secureDelete(QUEUE_KEY),
-      secureDelete(MEDICATION_OPTIONS_KEY),
-      AsyncStorage.removeItem(CURSOR_KEY),
-      AsyncStorage.removeItem(REMOTE_CHANGES_KEY),
-      AsyncStorage.removeItem(BIOMETRIC_KEY),
+      enqueueAuthStorage(async () => {
+        await Promise.all([
+          secureDelete(VAULT_KEY),
+          secureDelete(QUEUE_KEY),
+          secureDelete(MEDICATION_OPTIONS_KEY),
+          AsyncStorage.removeItem(CURSOR_KEY),
+          AsyncStorage.removeItem(REMOTE_CHANGES_KEY),
+          AsyncStorage.removeItem(BIOMETRIC_KEY),
+        ]);
+      }),
       clearMedicationNotifications(),
     ]);
+    // A replacement login may have completed while the old credential was
+    // being cleared. Its generation and token must win over this invalidation.
+    if (sessionGenerationRef.current !== invalidationGeneration || activeTokenRef.current !== null) return;
     setSession(false);
     setEmail(null);
     setQueue([]);
@@ -349,14 +415,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setSyncStatus('idle');
     setSyncHistoryLoading(false);
     setMedicationReminders(null);
+    setMedicationRefreshState('idle');
     setBiometricEnabledState(false);
     setSessionNotice('This device session is no longer valid. Sign in again with an active account. Unsynced captures from the previous session were removed to keep them separate from a new account.');
-  }, []);
+  }, [enqueueAuthStorage]);
 
   useEffect(() => {
     setAuthFailureHandler((error, token) => {
       if (isInvalidSessionError(error) && token && token === activeTokenRef.current) {
-        return invalidateSession();
+        return invalidateSession(token);
       }
     });
     return () => setAuthFailureHandler(null);
@@ -364,6 +431,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     try { await revokeMobileDeviceSession(); } catch { /* Preserve local logout even when offline. */ }
+    sessionGenerationRef.current += 1;
+    invalidatingRef.current = false;
     activeTokenRef.current = null;
     setAuthTokenGetter(null);
     await secureDelete(VAULT_KEY);
@@ -375,6 +444,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setSyncStatus('idle');
     setSyncHistoryLoading(false);
     setMedicationReminders(null);
+    setMedicationRefreshState('idle');
   }, []);
 
   const setBiometric = useCallback(async (enabled: boolean) => {
@@ -393,6 +463,67 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return next;
     });
   }, []);
+  const enqueueMedicationMutation = useCallback(async (
+    input: Omit<QueueItem, 'id' | 'idempotencyKey' | 'state'> & {
+      entityId: string;
+      operation: 'upsert' | 'delete';
+    },
+  ) => {
+    if (invalidatedRef.current) return;
+    const id = localUuid();
+    const item = { ...input, id, idempotencyKey: id, state: 'pending' as const };
+    setQueue((current) => {
+      const next = [
+        ...current.filter((candidate) => !(
+          candidate.kind === 'medication'
+          && candidate.entityId === item.entityId
+          && candidate.state !== 'syncing'
+        )),
+        item,
+      ];
+      void secureSet(QUEUE_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+  const updateMedicationDose = useCallback(async (input: {
+    entityId: string;
+    serverVersion: number;
+    title: string;
+    medicationId: string;
+    takenAt: string;
+    dose?: string;
+    status: 'taken' | 'skipped';
+    detail?: string;
+  }) => {
+    const normalizedDose = input.dose?.trim() || undefined;
+    if (input.status === 'taken' && (!normalizedDose || !Number.isFinite(Number(normalizedDose)) || Number(normalizedDose) <= 0)) {
+      throw new Error('Enter a positive dose before saving.');
+    }
+    await enqueueMedicationMutation({
+      kind: 'medication',
+      operation: 'upsert',
+      entityId: input.entityId,
+      title: input.title,
+      detail: input.detail?.trim() || undefined,
+      occurredAt: input.takenAt,
+      changedAt: new Date().toISOString(),
+      medicationId: input.medicationId,
+      dose: normalizedDose,
+      medicationStatus: input.status,
+      serverVersion: input.serverVersion,
+    });
+  }, [enqueueMedicationMutation]);
+  const deleteMedicationDose = useCallback(async (input: { entityId: string; serverVersion: number }) => {
+    await enqueueMedicationMutation({
+      kind: 'medication',
+      operation: 'delete',
+      entityId: input.entityId,
+      title: 'Medication dose deletion',
+      occurredAt: new Date().toISOString(),
+      changedAt: new Date().toISOString(),
+      serverVersion: input.serverVersion,
+    });
+  }, [enqueueMedicationMutation]);
 
   const retry = useCallback(async (id: string) => setQueue((current) => {
     if (invalidatedRef.current) return current;
@@ -438,7 +569,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             attachmentId = stored.id;
           }
           const entityType = entityTypeForQueueItem(item) as 'transaction' | 'task' | 'vital' | 'medicationDose' | 'event';
-          const payload = entityType === 'transaction'
+          const operation = item.operation ?? 'upsert';
+          const payload = operation === 'delete'
+            ? {}
+            : entityType === 'transaction'
             ? {
                 clientId: item.id,
                 amount: item.amount ?? 0,
@@ -465,7 +599,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                   }
                 : entityType === 'medicationDose'
                   ? {
-                      clientId: item.id,
+                      clientId: item.entityId ?? item.id,
                       medicationId: item.medicationId ?? '',
                       scheduleId: item.scheduleId,
                       takenAt: item.occurredAt,
@@ -481,7 +615,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                       notes: item.detail,
                     };
           return {
-            changeId: item.id, entityId: item.id, operation: 'upsert' as const, baseVersion: item.serverVersion ?? 0, changedAt: item.occurredAt,
+            changeId: item.id,
+            entityId: item.entityId ?? item.id,
+            operation,
+            baseVersion: item.serverVersion ?? 0,
+            changedAt: item.changedAt ?? item.occurredAt,
             entityType,
             payload: { ...payload, attachmentId },
           };
@@ -548,10 +686,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [queue, rememberSyncHistory, session, remoteChanges]);
   const restoreCapture = useCallback(async (entityId: string, expectedVersion: number) => {
     if (invalidatedRef.current) return;
-    await restoreMobileCapture(
-      { entityId, expectedVersion },
-      { headers: { 'Idempotency-Key': `restore:${entityId}:${expectedVersion}` } },
-    );
+    try {
+      await restoreMobileCapture(
+        { entityId, expectedVersion },
+        { headers: { 'Idempotency-Key': `restore:${entityId}:${expectedVersion}` } },
+      );
+    } catch (error) {
+      const data = error && typeof error === 'object' && 'data' in error
+        ? (error as { data?: unknown }).data
+        : undefined;
+      const code = data && typeof data === 'object' && 'error' in data
+        ? (data as { error?: { code?: unknown } }).error?.code
+        : undefined;
+      if (code === 'restore_unavailable') {
+        const unavailable = data as MobileRestoreUnavailableApiError;
+        throw new RestoreUnavailableError(unavailable.error.message);
+      }
+      throw error;
+    }
     await syncNow();
   }, [syncNow]);
   useEffect(() => {
@@ -571,12 +723,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const refreshMedicationReminders = useCallback(async () => {
     if (!session || invalidatedRef.current) return;
-    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-    const settings = await getMobilePushReminders();
-    const reconciledSettings = reconcileReminderTimezone(settings, timezone);
-    if (reconciledSettings) await updateMobilePushReminders(reconciledSettings);
-    const current = await getMobileMedicationReminders();
+    setMedicationRefreshState('loading');
+    let current: MobileMedicationReminders;
+    try {
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      const settings = await getMobilePushReminders();
+      const reconciledSettings = reconcileReminderTimezone(settings, timezone);
+      if (reconciledSettings) await updateMobilePushReminders(reconciledSettings);
+      current = await getMobileMedicationReminders();
+    } catch (error) {
+      setMedicationRefreshState('error');
+      throw error;
+    }
     setMedicationReminders(current);
+    setMedicationRefreshState('ready');
     if (email) await secureSet(MEDICATION_OPTIONS_KEY, JSON.stringify({ email, options: current }));
     if (Platform.OS === 'web') return;
     await withMedicationNotificationScheduleLock(async () => {
@@ -689,8 +849,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo(() => ({
     ready, session, email, sessionNotice, biometricAvailable, biometricEnabled, queue, remoteChanges, syncHistory, syncHistoryLoading, syncStatus, login, unlock, logout,
-    setBiometric, enqueue, retry, remove, syncNow, restoreCapture, enableReminders, medicationReminders, refreshMedicationReminders, setMedicationReminder, setMedicationQuietHours,
-  }), [ready, session, email, sessionNotice, biometricAvailable, biometricEnabled, queue, remoteChanges, syncHistory, syncHistoryLoading, syncStatus, login, unlock, logout, setBiometric, enqueue, retry, remove, syncNow, restoreCapture, enableReminders, medicationReminders, refreshMedicationReminders, setMedicationReminder, setMedicationQuietHours]);
+    setBiometric, enqueue, retry, remove, updateMedicationDose, deleteMedicationDose, syncNow, restoreCapture, enableReminders, medicationReminders, medicationRefreshState, refreshMedicationReminders, setMedicationReminder, setMedicationQuietHours,
+  }), [ready, session, email, sessionNotice, biometricAvailable, biometricEnabled, queue, remoteChanges, syncHistory, syncHistoryLoading, syncStatus, login, unlock, logout, setBiometric, enqueue, retry, remove, updateMedicationDose, deleteMedicationDose, syncNow, restoreCapture, enableReminders, medicationReminders, medicationRefreshState, refreshMedicationReminders, setMedicationReminder, setMedicationQuietHours]);
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 
