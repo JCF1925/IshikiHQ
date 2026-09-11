@@ -11,6 +11,7 @@ export type StockLedgerEntry = {
   quantityChange: number
   balanceAfter: number
   notes: string | null
+  auditKind: 'reconciliation' | 'mismatch_resolution' | null
 }
 
 export type StockHistoricalMismatch = {
@@ -18,6 +19,15 @@ export type StockHistoricalMismatch = {
   date: Date
   recordedBalanceAfter: number
   ledgerBalance: number
+  resolution?: StockHistoricalMismatchResolution
+}
+
+export type StockHistoricalMismatchResolution = {
+  id: string
+  date: Date
+  beforeRecordedBalance: number
+  afterLedgerBalance: number
+  reason: string
 }
 
 export type StockLedgerDiagnostic = {
@@ -33,10 +43,52 @@ export type StockLedgerDiagnostic = {
 }
 
 const quantitiesDiffer = (left: number, right: number) => Math.abs(left - right) > 0.0000001
-const historicalReconciliationNotePrefix = 'Historical stock reconciliation:'
+const historicalMismatchResolutionNotePrefix = 'Historical stock mismatch resolution:'
 
-export function isHistoricalStockReconciliation(entry: Pick<StockLedgerEntry, 'notes'>) {
-  return entry.notes?.startsWith(historicalReconciliationNotePrefix) ?? false
+export function isHistoricalStockReconciliation(entry: Pick<StockLedgerEntry, 'auditKind'>) {
+  return entry.auditKind === 'reconciliation'
+}
+
+export function isHistoricalStockMismatchResolution(entry: Pick<StockLedgerEntry, 'auditKind'>) {
+  return entry.auditKind === 'mismatch_resolution'
+}
+
+export function formatHistoricalStockMismatchResolutionNote(input: {
+  mismatchId: string
+  beforeRecordedBalance: number
+  afterLedgerBalance: number
+  reason: string
+}) {
+  return `${historicalMismatchResolutionNotePrefix} ${JSON.stringify(input)}`
+}
+
+function parseHistoricalStockMismatchResolution(
+  entry: Pick<StockLedgerEntry, 'id' | 'date' | 'notes' | 'auditKind'>,
+): StockHistoricalMismatchResolution & { mismatchId: string } | null {
+  if (entry.auditKind !== 'mismatch_resolution' || !entry.notes?.startsWith(historicalMismatchResolutionNotePrefix)) return null
+  try {
+    const value = JSON.parse(entry.notes.slice(historicalMismatchResolutionNotePrefix.length).trim()) as Record<string, unknown>
+    if (
+      typeof value.mismatchId !== 'string'
+      || typeof value.beforeRecordedBalance !== 'number'
+      || typeof value.afterLedgerBalance !== 'number'
+      || typeof value.reason !== 'string'
+    ) return null
+    return {
+      id: entry.id,
+      date: entry.date,
+      mismatchId: value.mismatchId,
+      beforeRecordedBalance: value.beforeRecordedBalance,
+      afterLedgerBalance: value.afterLedgerBalance,
+      reason: value.reason,
+    }
+  } catch {
+    return null
+  }
+}
+
+function isHistoricalStockAuditEntry(entry: Pick<StockLedgerEntry, 'auditKind'>) {
+  return isHistoricalStockReconciliation(entry) || isHistoricalStockMismatchResolution(entry)
 }
 
 /**
@@ -50,8 +102,15 @@ export function isHistoricalStockReconciliation(entry: Pick<StockLedgerEntry, 'n
 export function summarizeStockLedger(currentQuantity: number, entries: StockLedgerEntry[]): StockLedgerDiagnostic {
   let ledgerQuantity = 0
   const historicalMismatches: StockHistoricalMismatch[] = []
+  const resolutionsByMismatchId = new Map<string, StockHistoricalMismatchResolution>()
   for (const entry of entries) {
-    if (isHistoricalStockReconciliation(entry)) continue
+    const resolution = parseHistoricalStockMismatchResolution(entry)
+    if (resolution) {
+      const { mismatchId, ...auditEntry } = resolution
+      resolutionsByMismatchId.set(mismatchId, auditEntry)
+      continue
+    }
+    if (isHistoricalStockAuditEntry(entry)) continue
     ledgerQuantity += entry.quantityChange
     if (quantitiesDiffer(entry.balanceAfter, ledgerQuantity)) {
       historicalMismatches.push({
@@ -59,19 +118,25 @@ export function summarizeStockLedger(currentQuantity: number, entries: StockLedg
         date: entry.date,
         recordedBalanceAfter: entry.balanceAfter,
         ledgerBalance: ledgerQuantity,
+        ...(resolutionsByMismatchId.has(entry.id) ? { resolution: resolutionsByMismatchId.get(entry.id) } : {}),
       })
     }
   }
-  const lastLedgerEntry = [...entries].reverse().find(entry => !isHistoricalStockReconciliation(entry))
+  for (const mismatch of historicalMismatches) {
+    const resolution = resolutionsByMismatchId.get(mismatch.id)
+    if (resolution) mismatch.resolution = resolution
+  }
+  const unresolvedHistoricalMismatches = historicalMismatches.filter(mismatch => !mismatch.resolution)
+  const lastLedgerEntry = [...entries].reverse().find(entry => !isHistoricalStockAuditEntry(entry))
   const lastLedgerBalance = lastLedgerEntry?.balanceAfter ?? null
   return {
     currentQuantity,
     ledgerQuantity,
     lastLedgerBalance,
     transactionCount: entries.length,
-    historicalBalanceMismatchCount: historicalMismatches.length,
+    historicalBalanceMismatchCount: unresolvedHistoricalMismatches.length,
     historicalMismatches,
-    hasHistoricalInconsistency: historicalMismatches.length > 0,
+    hasHistoricalInconsistency: unresolvedHistoricalMismatches.length > 0,
     mismatchQuantity: ledgerQuantity - currentQuantity,
     hasMismatch: quantitiesDiffer(currentQuantity, ledgerQuantity),
   }
@@ -90,7 +155,7 @@ export async function getMedicationStockDiagnostic(
   const entries = await tx.stockTransaction.findMany({
     where: { userId, medicationId },
     orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-    select: { id: true, date: true, quantityChange: true, balanceAfter: true, notes: true },
+    select: { id: true, date: true, quantityChange: true, balanceAfter: true, notes: true, auditKind: true },
   })
   return summarizeStockLedger(stock.currentQuantity, entries)
 }
