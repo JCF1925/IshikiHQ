@@ -484,3 +484,129 @@ test('Google cancellation recovery carries a safe destination into signup', {
     await browser.close()
   }
 })
+
+test('Signup recovery preserves only a safe callback after automatic sign-in fails', {
+  skip: !baseUrl && !regressionRequired
+    ? 'Set AUTH_REGRESSION_BASE to the running Syntropic web server'
+    : false,
+}, async () => {
+  assert.ok(baseUrl, 'AUTH_REGRESSION_BASE is required for the Google OAuth regression')
+
+  const browser = await chromium.launch({
+    executablePath: process.env.CHROMIUM_BIN || '/repl/tools/bin/chromium',
+    headless: true,
+    args: ['--no-sandbox', '--disable-dev-shm-usage'],
+  })
+
+  const scenarios = [
+    {
+      name: 'safe local callback',
+      callbackUrl: '/events?from=signup-failed-auto-login#retry',
+      expectedCallbackUrl: '/events?from=signup-failed-auto-login#retry',
+    },
+    {
+      name: 'external callback',
+      callbackUrl: 'https://evil.example/account?next=/events#phish',
+      expectedCallbackUrl: '/',
+    },
+    {
+      name: 'malformed callback',
+      callbackUrl: '/\\evil.example?next=/events#phish',
+      expectedCallbackUrl: '/',
+    },
+  ] as const
+
+  try {
+    for (const scenario of scenarios) {
+      const context = await browser.newContext()
+      const page = await context.newPage()
+      let signupRequestSeen = false
+      let credentialsSignInRequestSeen = false
+
+      await page.route('**/api/signup', async (route) => {
+        signupRequestSeen = true
+        await route.fulfill({
+          status: 201,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            id: 'browser-regression-user',
+            email: 'browser-regression@example.com',
+            name: 'Browser Regression',
+          }),
+        })
+      })
+      await page.route('**/api/auth/providers', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            credentials: {
+              id: 'credentials',
+              name: 'Credentials',
+              type: 'credentials',
+              signinUrl: '/api/auth/signin/credentials',
+              callbackUrl: '/api/auth/callback/credentials',
+            },
+          }),
+        })
+      })
+      await page.route('**/api/auth/csrf', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ csrfToken: 'browser-regression-csrf-token' }),
+        })
+      })
+      await page.route('**/api/auth/callback/credentials**', async (route) => {
+        credentialsSignInRequestSeen = true
+        const failureUrl = new URL('/login', baseUrl)
+        failureUrl.searchParams.set('error', 'CredentialsSignin')
+        await route.fulfill({
+          status: 401,
+          contentType: 'application/json',
+          body: JSON.stringify({ url: failureUrl.href }),
+        })
+      })
+
+      const signupUrl = new URL('/signup', baseUrl)
+      signupUrl.searchParams.set('callbackUrl', scenario.callbackUrl)
+      await page.goto(signupUrl.href)
+      await page.getByLabel('Name').fill('Browser Regression')
+      await page.getByLabel('Email').fill('browser-regression@example.com')
+      await page.getByLabel('Password').fill('BrowserRegression!2026')
+      await page.getByRole('button', { name: 'Create account', exact: true }).click()
+
+      const expectedLoginUrl = new URL('/login', baseUrl)
+      expectedLoginUrl.searchParams.set('callbackUrl', scenario.expectedCallbackUrl)
+      await expectBrowser.poll(
+        () => page.url(),
+        {
+          message: `${scenario.name} should return to login with its safe callback`,
+        },
+      ).toBe(expectedLoginUrl.href)
+
+      assert.equal(signupRequestSeen, true, `${scenario.name} should create the account first`)
+      assert.equal(
+        credentialsSignInRequestSeen,
+        true,
+        `${scenario.name} should attempt automatic credentials sign-in`,
+      )
+      assert.equal(new URL(page.url()).origin, new URL(baseUrl).origin)
+      assert.equal(new URL(page.url()).pathname, '/login')
+      assert.deepEqual(
+        [...new URL(page.url()).searchParams.keys()],
+        ['callbackUrl'],
+        `${scenario.name} recovery should include only the callback parameter`,
+      )
+      assert.equal(
+        new URL(page.url()).searchParams.get('callbackUrl'),
+        scenario.expectedCallbackUrl,
+        `${scenario.name} recovery must retain only a safe local destination`,
+      )
+
+      await context.close()
+    }
+  } finally {
+    await browser.close()
+  }
+})
