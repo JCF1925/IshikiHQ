@@ -2460,6 +2460,7 @@ model Appointment {
   agendaItems  PrivateAgendaItem[]
   referral       Referral?       @relation(fields: [referralId], references: [id], onDelete: SetNull)
   referralUsages ReferralUsage[]
+  medicareClaims MedicareClaim[]
 
   @@index([userId])
   @@index([startTime])
@@ -2722,6 +2723,7 @@ model MedicareClaim {
   countsToSafetyNet Boolean  @default(true)
   isForecast        Boolean  @default(false)
   notes             String?
+  appointmentId     String?
   sourceImportId    String?
   sourceRowId       String?
   importFingerprint String?
@@ -2729,10 +2731,12 @@ model MedicareClaim {
   updatedAt         DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
 
   @@unique([userId, importFingerprint])
   @@index([userId])
   @@index([serviceDate])
+  @@index([appointmentId])
 }
 
 model PhiPolicy {
@@ -2981,6 +2985,11 @@ model MoodLog {
 
 // ─── STOCK TRACKING & STOCKTAKE ─────────────────────────────
 // Detailed medication stock ledger: every dispense, consumption, adjustment or stocktake
+enum StockTransactionAuditKind {
+  reconciliation
+  mismatch_resolution
+}
+
 model StockTransaction {
   id              String   @id @default(cuid())
   userId          String
@@ -2991,6 +3000,7 @@ model StockTransaction {
   balanceAfter    Float // resulting stock balance
   countedQuantity Float? // for stocktake: the physically counted amount
   notes           String?
+  auditKind       StockTransactionAuditKind?
   createdAt       DateTime @default(now())
 
   user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -3135,6 +3145,7 @@ model Household {
   name        String
   currency    String   @default("AUD")
   createdById String
+  preferredStorageLabelLayout String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
