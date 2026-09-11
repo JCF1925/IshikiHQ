@@ -4,7 +4,6 @@ import { createHash, randomUUID } from 'node:crypto'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/db'
 import { apiError, apiSuccess } from '@/lib/api'
-import { healthClaimReportWhere } from '@/lib/account-security'
 import { parseHealthClaimFile, type HealthClaimKind } from '@/lib/health-claims'
 import { storePrivateFile } from '@/lib/s3'
 
@@ -34,14 +33,37 @@ function importServiceUnavailable(error: unknown) {
   )
 }
 
+function removedImportLifecycle(record: {
+  id: string
+  kind: string
+  status: string
+  confirmedAt: Date | null
+  canceledAt: Date | null
+  deletedAt: Date | null
+  createdAt: Date
+  updatedAt: Date
+}) {
+  return {
+    id: record.id,
+    kind: record.kind,
+    status: record.status,
+    confirmedAt: record.confirmedAt,
+    canceledAt: record.canceledAt,
+    deletedAt: record.deletedAt,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    removalReason: record.status === 'canceled' ? 'review_canceled' : 'source_removed',
+  }
+}
+
 export async function GET() {
   const session = await auth()
   if (!session?.user) return apiError('UNAUTHORIZED', 'Authentication required', 401)
   const userId = (session.user as { id?: string }).id
   if (!userId) return apiError('UNAUTHORIZED', 'Authentication required', 401)
   try {
-    return apiSuccess(await prisma.healthClaimImport.findMany({
-      where: healthClaimReportWhere(userId),
+    const imports = await prisma.healthClaimImport.findMany({
+      where: { userId },
       select: {
         id: true, kind: true, fileName: true, contentType: true, byteSize: true, sha256: true,
         status: true, detectedFields: true, parseErrors: true, confirmedAt: true, canceledAt: true,
@@ -49,7 +71,12 @@ export async function GET() {
         _count: { select: { rows: true } },
       },
       orderBy: { createdAt: 'desc' },
-    }))
+    })
+    return apiSuccess(imports.map((record) => (
+      record.deletedAt
+        ? removedImportLifecycle(record)
+        : record
+    )))
   } catch (error) {
     if (isImportSchemaError(error)) return importServiceUnavailable(error)
     throw error
