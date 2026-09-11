@@ -47,6 +47,23 @@ export function OutcomeManager({ appointment, careData, open, onOpenChange, onRe
 
   if (!appointment) return null
 
+  const formatRecordedAt = (recordedAt: string | null | undefined) => {
+    if (!recordedAt) return 'Date not recorded'
+    const date = new Date(recordedAt)
+    return Number.isNaN(date.getTime())
+      ? 'Date not recorded'
+      : date.toLocaleDateString('en-AU', { dateStyle: 'medium', timeZone: 'UTC' })
+  }
+
+  const renderHistoryList = (label: string, values: unknown) => {
+    if (!Array.isArray(values) || values.length === 0) return null
+    return (
+      <p className="text-xs text-muted-foreground">
+        <span className="font-medium text-foreground">{label}:</span> {values.join(', ')}
+      </p>
+    )
+  }
+
   const saveOutcome = async () => {
     if (!form.outcome.trim()) return toast.error('Outcome summary is required')
     setSaving(true)
@@ -131,6 +148,47 @@ export function OutcomeManager({ appointment, careData, open, onOpenChange, onRe
         </DialogHeader>
         
         <div className="space-y-6 py-2">
+          {outcomes.length > 0 && (
+            <section aria-labelledby="outcome-history-heading" className="space-y-3 rounded-lg border border-border bg-muted/20 p-4">
+              <div>
+                <h3 id="outcome-history-heading" className="text-sm font-semibold">Outcome history</h3>
+                <p className="text-xs text-muted-foreground mt-1">Corrections are appended and keep the earlier record for audit.</p>
+              </div>
+              <div className="space-y-3">
+                {outcomes.map((outcome: any) => {
+                  const isCurrent = outcome.id === currentOutcome?.id
+                  return (
+                    <article key={outcome.id} className="rounded-md border border-border bg-background p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-xs font-medium text-muted-foreground">
+                          {isCurrent ? 'Current record' : 'Superseded record'}
+                        </span>
+                        <span className="text-xs text-muted-foreground">{formatRecordedAt(outcome.recordedAt)}</span>
+                      </div>
+                      <p className="mt-2 text-sm font-medium whitespace-pre-wrap">{outcome.outcome}</p>
+                      {outcome.followUp && <p className="mt-1 text-xs text-muted-foreground"><span className="font-medium text-foreground">Follow-up:</span> {outcome.followUp}</p>}
+                      {outcome.payment && (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          <span className="font-medium text-foreground">Payment:</span>{' '}
+                          {[outcome.payment.status, outcome.payment.amount != null ? `$${outcome.payment.amount}` : null, outcome.payment.method]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </p>
+                      )}
+                      <div className="mt-1 space-y-0.5">
+                        {renderHistoryList('Discussed', outcome.discussedItems)}
+                        {renderHistoryList('Medication changes', outcome.medicationChanges)}
+                        {renderHistoryList('Referrals', outcome.referrals)}
+                        {renderHistoryList('Pathology', outcome.pathologyRequests)}
+                        {renderHistoryList('Future tasks', outcome.futureTasks)}
+                      </div>
+                    </article>
+                  )
+                })}
+              </div>
+            </section>
+          )}
+
           {currentOutcome && (
             <div className="bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 p-3 rounded-md text-sm">
               You are creating a correction. This will supersede the previously recorded outcome.
