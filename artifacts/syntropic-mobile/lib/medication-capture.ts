@@ -28,6 +28,11 @@ export interface MedicationCaptureQueueInput {
   attachmentUri?: string;
 }
 
+export interface MedicationSelection {
+  medicationId: string;
+  scheduleId: string;
+}
+
 export function getMedicationChoices(
   reminders: readonly MedicationReminderChoice[],
 ): MedicationReminderChoice[] {
@@ -39,6 +44,21 @@ export function getMedicationSchedules(
   medicationId: string,
 ): MedicationReminderChoice[] {
   return reminders.filter((reminder) => reminder.medicationId === medicationId);
+}
+
+export function reconcileMedicationSelection(
+  reminders: readonly MedicationReminderChoice[],
+  selection: MedicationSelection,
+): MedicationSelection {
+  const medicationExists = reminders.some((reminder) => reminder.medicationId === selection.medicationId);
+  if (!medicationExists) return { medicationId: '', scheduleId: '' };
+
+  const scheduleExists = reminders.some((reminder) =>
+    reminder.medicationId === selection.medicationId && reminder.scheduleId === selection.scheduleId);
+  return {
+    medicationId: selection.medicationId,
+    scheduleId: scheduleExists ? selection.scheduleId : '',
+  };
 }
 
 export function buildMedicationCaptureQueueInput(input: {
