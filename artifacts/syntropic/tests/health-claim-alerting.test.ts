@@ -93,6 +93,66 @@ describe('health-claim ownership alert grouping', () => {
     }
   })
 
+  it('starts a fresh sanitized aggregate when the shared window expires', async () => {
+    const originalDate = globalThis.Date
+    const originalFetch = globalThis.fetch
+    const previousWebhook = process.env.OPS_ALERT_WEBHOOK_URL
+    const previousOwner = process.env.OPS_ALERT_OWNER
+    const alertBodies: Array<Record<string, any>> = []
+    let currentTime = originalDate.parse('2026-09-11T12:00:00.000Z')
+
+    class ControlledDate extends originalDate {
+      constructor(value?: string | number) {
+        super(value === undefined ? currentTime : value)
+      }
+
+      static now() {
+        return currentTime
+      }
+    }
+
+    process.env.OPS_ALERT_WEBHOOK_URL = 'https://alerts.example.test/receiver'
+    process.env.OPS_ALERT_OWNER = 'health-claims-test-owner'
+    globalThis.Date = ControlledDate
+    globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit) => {
+      alertBodies.push(JSON.parse(String(init?.body)))
+      return new Response(null, { status: 204 })
+    }
+
+    try {
+      const sharedDatabase = createSharedDatabase()
+      const ownershipError = new Error(
+        'health claim import audit user must match import owner',
+      )
+
+      await reportHealthClaimOwnershipViolation(sharedDatabase as never)
+      await reportHealthClaimOwnershipViolation(sharedDatabase as never)
+
+      currentTime += 60_000
+      await reportHealthClaimOwnershipViolation(sharedDatabase as never)
+
+      assert.equal(isHealthClaimOwnershipViolation(ownershipError), true)
+      assert.equal(ownershipError.message, 'health claim import audit user must match import owner')
+      assert.equal(alertBodies.length, 2)
+      assert.equal(alertBodies[0].details.groupedCount, 1)
+      assert.equal(alertBodies[1].details.groupedCount, 1)
+      assert.equal(alertBodies[1].details.groupingWindowSeconds, 60)
+      assert.deepEqual(alertBodies[1].details, {
+        groupedCount: 1,
+        groupingWindowSeconds: 60,
+        acknowledgementTargetMinutes: 15,
+      })
+      assert.doesNotMatch(JSON.stringify(alertBodies[1]), /request|credential|record|user/i)
+    } finally {
+      globalThis.Date = originalDate
+      globalThis.fetch = originalFetch
+      if (previousWebhook === undefined) delete process.env.OPS_ALERT_WEBHOOK_URL
+      else process.env.OPS_ALERT_WEBHOOK_URL = previousWebhook
+      if (previousOwner === undefined) delete process.env.OPS_ALERT_OWNER
+      else process.env.OPS_ALERT_OWNER = previousOwner
+    }
+  })
+
   it('does not throw when shared grouping is unavailable', async () => {
     const result = await reportHealthClaimOwnershipViolation({
       $transaction: async () => {
