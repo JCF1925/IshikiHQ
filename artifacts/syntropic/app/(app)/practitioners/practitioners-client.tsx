@@ -15,9 +15,9 @@ import { FadeIn, Stagger, StaggerItem } from '@/components/ui/animate'
 import { SafeDate } from '@/components/safe-format'
 import { OfferingsManager } from '@/components/appointments/offerings-manager'
 import { Switch } from '@/components/ui/switch'
-import { Stethoscope, Plus, Trash2, Building2, Phone, Mail, FileText, Bell } from 'lucide-react'
+import { Stethoscope, Plus, Trash2, Pencil, Building2, Phone, Mail, Globe, FileText, Bell } from 'lucide-react'
 
-type Org = { id: string; name: string; type: string | null; phone: string | null; address: string | null; medicarePracticeIdentifier: string | null }
+type Org = { id: string; name: string; type: string | null; phone: string | null; address: string | null; website?: string | null; medicarePracticeIdentifier: string | null }
 type Person = { id: string; name: string; type: string; role: string | null; phone: string | null; email: string | null; organisationId: string | null; organisation: Org | null; referralRequired: boolean; isActive: boolean }
 type Referral = {
   id: string; issueDate: string; expiryDate: string | null; validityType: string; serviceLimitPeriod: string | null; appointmentLimit: number | null; appointmentsUsed: number
@@ -29,7 +29,7 @@ type Referral = {
 }
 
 const emptyPerson = { name: '', role: '', phone: '', email: '', organisationId: '', referralRequired: false }
-const emptyOrg = { name: '', phone: '', address: '', medicarePracticeIdentifier: '' }
+const emptyOrg = { name: '', phone: '', address: '', website: '', medicarePracticeIdentifier: '' }
 const emptyRef = { practitionerId: '', referrerId: '', conditionId: '', issueDate: new Date().toISOString().slice(0, 10), validityType: 'six_months', expiryDate: '', appointmentLimit: '', serviceLimitPeriod: 'calendar_year', reason: '' }
 
 export function PractitionersClient() {
@@ -43,6 +43,7 @@ export function PractitionersClient() {
   const [showPerson, setShowPerson] = useState(false)
   const [personForm, setPersonForm] = useState({ ...emptyPerson })
   const [showOrg, setShowOrg] = useState(false)
+  const [editOrg, setEditOrg] = useState<Org | null>(null)
   const [orgForm, setOrgForm] = useState({ ...emptyOrg })
   const [showRef, setShowRef] = useState(false)
   const [refForm, setRefForm] = useState({ ...emptyRef })
@@ -80,10 +81,16 @@ export function PractitionersClient() {
     if (!orgForm.name.trim()) { toast.error('Name is required'); return }
     setSaving(true)
     try {
-      const res = await fetch('/api/organisations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...orgForm, type: 'medical_practice' }) })
-      if (!res.ok) throw new Error()
-      toast.success('Practice added'); setShowOrg(false); setOrgForm({ ...emptyOrg }); fetchAll()
-    } catch { toast.error('Failed to save') } finally { setSaving(false) }
+      const res = editOrg
+        ? await fetch(`/api/organisations/${editOrg.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...orgForm, type: 'medical_practice' }) })
+        : await fetch('/api/organisations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...orgForm, type: 'medical_practice' }) })
+      const result = await res.json().catch(() => null)
+      if (!res.ok) throw new Error(typeof result?.error === 'string' ? result.error : 'Failed to save practice')
+      toast.success(editOrg ? 'Practice updated' : 'Practice added')
+      setShowOrg(false); setEditOrg(null); setOrgForm({ ...emptyOrg }); fetchAll()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to save practice')
+    } finally { setSaving(false) }
   }
 
   const saveRef = async () => {
@@ -157,7 +164,7 @@ export function PractitionersClient() {
 
         {/* PRACTICES */}
         <TabsContent value="practices" className="space-y-4 pt-4">
-          <div className="flex justify-end"><Button onClick={() => { setOrgForm({ ...emptyOrg }); setShowOrg(true) }}><Plus className="h-4 w-4 mr-1" /> Add practice</Button></div>
+          <div className="flex justify-end"><Button onClick={() => { setEditOrg(null); setOrgForm({ ...emptyOrg }); setShowOrg(true) }}><Plus className="h-4 w-4 mr-1" /> Add practice</Button></div>
           {orgs.length === 0 ? (
             <Card><CardContent className="py-10 text-center text-muted-foreground">No practices yet.</CardContent></Card>
           ) : (
@@ -167,11 +174,15 @@ export function PractitionersClient() {
                   <Card className="h-full">
                     <CardHeader className="flex flex-row items-start justify-between pb-2">
                       <CardTitle className="text-base flex items-center gap-2"><Building2 className="h-4 w-4 text-primary" /> {o.name}</CardTitle>
-                      <Button variant="ghost" size="icon-sm" onClick={() => delOrg(o.id)}><Trash2 className="h-4 w-4" /></Button>
+                      <div className="flex items-center gap-1">
+                        <Button variant="ghost" size="icon-sm" aria-label={`Edit ${o.name}`} onClick={() => { setEditOrg(o); setOrgForm({ name: o.name, phone: o.phone ?? '', address: o.address ?? '', website: o.website ?? '', medicarePracticeIdentifier: o.medicarePracticeIdentifier ?? '' }); setShowOrg(true) }}><Pencil className="h-4 w-4" /></Button>
+                        <Button variant="ghost" size="icon-sm" aria-label={`Delete ${o.name}`} onClick={() => delOrg(o.id)}><Trash2 className="h-4 w-4" /></Button>
+                      </div>
                     </CardHeader>
                     <CardContent className="space-y-1 text-sm">
                       {o.phone && <p className="text-xs text-muted-foreground flex items-center gap-1"><Phone className="h-3 w-3" /> {o.phone}</p>}
                       {o.address && <p className="text-xs text-muted-foreground">{o.address}</p>}
+                      {o.website && <p className="text-xs text-muted-foreground flex items-center gap-1"><Globe className="h-3 w-3" /> {o.website}</p>}
                       {o.medicarePracticeIdentifier && <p className="text-xs text-muted-foreground">Medicare practice identifier: {o.medicarePracticeIdentifier}</p>}
                       <OfferingsManager practice={o} offerings={offerings} people={people} onRefresh={fetchAll} />
                     </CardContent>
@@ -247,16 +258,17 @@ export function PractitionersClient() {
       </Dialog>
 
       {/* Add practice dialog */}
-      <Dialog open={showOrg} onOpenChange={setShowOrg}>
+      <Dialog open={showOrg} onOpenChange={(open) => { setShowOrg(open); if (!open) setEditOrg(null) }}>
         <DialogContent className="max-w-lg">
-          <DialogHeader><DialogTitle>Add practice</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{editOrg ? 'Edit practice' : 'Add practice'}</DialogTitle></DialogHeader>
           <div className="space-y-3 py-2">
             <div className="space-y-1.5"><Label>Name *</Label><Input value={orgForm.name} onChange={(e) => setOrgForm({ ...orgForm, name: e.target.value })} placeholder="e.g. Bayside Medical Centre" /></div>
             <div className="space-y-1.5"><Label>Phone</Label><Input value={orgForm.phone} onChange={(e) => setOrgForm({ ...orgForm, phone: e.target.value })} /></div>
             <div className="space-y-1.5"><Label>Address</Label><Input value={orgForm.address} onChange={(e) => setOrgForm({ ...orgForm, address: e.target.value })} /></div>
+            <div className="space-y-1.5"><Label>Website</Label><Input type="url" value={orgForm.website} onChange={(e) => setOrgForm({ ...orgForm, website: e.target.value })} placeholder="https://example.com" /></div>
             <div className="space-y-1.5"><Label>Medicare practice identifier</Label><Input value={orgForm.medicarePracticeIdentifier} onChange={(e) => setOrgForm({ ...orgForm, medicarePracticeIdentifier: e.target.value })} placeholder="Optional provider/practice identifier" /></div>
           </div>
-          <DialogFooter><Button variant="outline" onClick={() => setShowOrg(false)}>Cancel</Button><Button onClick={saveOrg} loading={saving}>Add</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" onClick={() => setShowOrg(false)}>Cancel</Button><Button onClick={saveOrg} loading={saving}>{editOrg ? 'Save changes' : 'Add'}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
