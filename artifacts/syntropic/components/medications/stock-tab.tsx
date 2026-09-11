@@ -4,25 +4,37 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 import { AlertTriangle, ArrowDown, ArrowUp, ClipboardCheck, Edit2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { format } from 'date-fns'
 
 export function StockTab({ variant, data, onRefetch }: any) {
   const { stockTxns, stockLevel } = data
-  const historicalMismatchesById = new Map<string, { recordedBalanceAfter: number; ledgerBalance: number }>(
+  const historicalMismatchesById = new Map<string, {
+    recordedBalanceAfter: number
+    ledgerBalance: number
+    resolution?: { reason: string }
+  }>(
     (stockLevel?.historicalMismatches ?? []).map((mismatch: any) => [
       mismatch.id,
-      { recordedBalanceAfter: mismatch.recordedBalanceAfter, ledgerBalance: mismatch.ledgerBalance },
+      {
+        recordedBalanceAfter: mismatch.recordedBalanceAfter,
+        ledgerBalance: mismatch.ledgerBalance,
+        resolution: mismatch.resolution,
+      },
     ]),
   )
   const [showAdjust, setShowAdjust] = useState(false)
   const [showStocktake, setShowStocktake] = useState(false)
   const [showThreshold, setShowThreshold] = useState(false)
   const [showReconcile, setShowReconcile] = useState(false)
+  const [showResolveHistory, setShowResolveHistory] = useState(false)
+  const [selectedMismatch, setSelectedMismatch] = useState<any>(null)
   const [form, setForm] = useState({ amount: '', isAdd: true, notes: '' })
   const [countedQuantity, setCountedQuantity] = useState('')
   const [threshold, setThreshold] = useState(String(stockLevel?.reorderThreshold ?? 5))
+  const [resolutionReason, setResolutionReason] = useState('')
   const [saving, setSaving] = useState(false)
 
   const handleAdjust = async () => {
@@ -120,31 +132,83 @@ export function StockTab({ variant, data, onRefetch }: any) {
     }
   }
 
+  const handleResolveHistory = async () => {
+    if (!stockLevel?.id || !selectedMismatch) return
+    const reason = resolutionReason.trim()
+    if (!reason) return toast.error('Enter a reason for this review')
+    setSaving(true)
+    try {
+      const res = await fetch('/api/stock-levels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'resolve_mismatch',
+          id: stockLevel.id,
+          mismatchId: selectedMismatch.id,
+          expectedRecordedBalance: selectedMismatch.recordedBalanceAfter,
+          expectedLedgerBalance: selectedMismatch.ledgerBalance,
+          reason,
+        }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        if (res.status === 409 && err.diagnostic) {
+          setShowResolveHistory(false)
+          setSelectedMismatch(null)
+          setResolutionReason('')
+          await onRefetch()
+        }
+        throw new Error(err.error || err.message || 'Failed to record stock history review')
+      }
+      toast.success('Stock history review recorded')
+      setShowResolveHistory(false)
+      setSelectedMismatch(null)
+      setResolutionReason('')
+      onRefetch()
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to record stock history review')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <div className="space-y-8">
-      <div className="border border-border/50 rounded-2xl p-6 flex flex-col md:flex-row md:items-center justify-between bg-card gap-4">
-        <div>
+      <div className="flex min-w-0 flex-col gap-4 rounded-2xl border border-border/50 bg-card p-4 sm:p-6 md:flex-row md:items-center md:justify-between">
+        <div className="min-w-0">
           <div className="text-xs text-muted-foreground font-medium uppercase tracking-wider mb-2">Current Stock</div>
           <div className="text-5xl font-display font-semibold text-foreground tracking-tight">{stockLevel?.currentQuantity || 0}</div>
           <div className="text-sm text-muted-foreground mt-2">Low stock alert at {stockLevel?.reorderThreshold || 5}</div>
           {stockLevel?.hasHistoricalInconsistency ? (
             <>
-              <div className="mt-4 flex max-w-lg items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200" role="alert">
+              <div className="mt-4 flex max-w-lg min-w-0 items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200" role="alert">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>
+                <span className="min-w-0 break-words">
                   Stock history needs review: {stockLevel.historicalBalanceMismatchCount} historical balance snapshot{stockLevel.historicalBalanceMismatchCount === 1 ? '' : 's'} do not match the cumulative ledger changes.
                   Do not reconcile this stock level until the history has been reviewed.
                 </span>
               </div>
-              <div className="mt-3 max-w-lg rounded-lg border border-red-500/20 bg-red-500/5 p-3 text-sm">
+              <div className="mt-3 max-w-lg min-w-0 rounded-lg border border-red-500/20 bg-red-500/5 p-3 text-sm">
                 <div className="mb-2 font-medium text-red-100">Entries needing review</div>
-                <div className="space-y-2">
-                  {stockLevel.historicalMismatches.map((mismatch: any) => (
+                <div className="min-w-0 space-y-2">
+                   {stockLevel.historicalMismatches.filter((mismatch: any) => !mismatch.resolution).map((mismatch: any) => (
                     <div key={mismatch.id} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-red-100/90">
-                      <span>{format(new Date(mismatch.date), "d MMM yyyy, HH:mm")}</span>
+                       <span>{format(new Date(mismatch.date), "d MMM yyyy, HH:mm")}</span>
                       <span className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
                         <span>Recorded: <strong>{mismatch.recordedBalanceAfter}</strong></span>
                         <span>Ledger: <strong>{mismatch.ledgerBalance}</strong></span>
+                         <Button
+                           variant="outline"
+                           size="sm"
+                           className="h-7 w-full border-red-500/40 text-red-200 hover:bg-red-500/10 sm:w-auto"
+                           onClick={() => {
+                             setSelectedMismatch(mismatch)
+                             setResolutionReason('')
+                             setShowResolveHistory(true)
+                           }}
+                         >
+                           Review entry
+                         </Button>
                       </span>
                     </div>
                   ))}
@@ -152,27 +216,27 @@ export function StockTab({ variant, data, onRefetch }: any) {
               </div>
             </>
           ) : stockLevel?.hasMismatch && (
-            <div className="mt-4 flex max-w-lg items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200" role="status">
+            <div className="mt-4 flex max-w-lg min-w-0 items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200" role="status">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>
+              <span className="min-w-0 break-words">
                 Historical ledger mismatch: the ledger totals {stockLevel.ledgerQuantity}, while current stock is {stockLevel.currentQuantity}.
                 Review and reconcile only if this ledger balance is correct.
               </span>
             </div>
           )}
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={() => { setThreshold(String(stockLevel?.reorderThreshold ?? 5)); setShowThreshold(true) }}>
+        <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap">
+          <Button className="w-full sm:w-auto" variant="outline" onClick={() => { setThreshold(String(stockLevel?.reorderThreshold ?? 5)); setShowThreshold(true) }}>
             <Edit2 className="w-4 h-4 mr-2" /> Alert threshold
           </Button>
-          <Button variant="outline" onClick={() => setShowStocktake(true)}>
+          <Button className="w-full sm:w-auto" variant="outline" onClick={() => setShowStocktake(true)}>
             <ClipboardCheck className="w-4 h-4 mr-2" /> Stocktake
           </Button>
-          <Button onClick={() => setShowAdjust(true)} className="bg-violet-600 hover:bg-violet-700 text-white">
+          <Button onClick={() => setShowAdjust(true)} className="w-full bg-violet-600 text-white hover:bg-violet-700 sm:w-auto">
             <Edit2 className="w-4 h-4 mr-2" /> Adjust stock
           </Button>
           {stockLevel?.hasMismatch && !stockLevel?.hasHistoricalInconsistency && (
-            <Button variant="outline" onClick={() => setShowReconcile(true)} className="border-amber-500/40 text-amber-200 hover:bg-amber-500/10">
+            <Button variant="outline" onClick={() => setShowReconcile(true)} className="w-full border-amber-500/40 text-amber-200 hover:bg-amber-500/10 sm:w-auto">
               <AlertTriangle className="w-4 h-4 mr-2" /> Review mismatch
             </Button>
           )}
@@ -202,11 +266,16 @@ export function StockTab({ variant, data, onRefetch }: any) {
                         <Badge variant="secondary" className="bg-violet-500/10 text-violet-300 font-normal capitalize">
                           {tx.type}
                         </Badge>
-                        {historicalMismatch && (
+                         {historicalMismatch && !historicalMismatch.resolution && (
                           <Badge variant="outline" className="border-red-500/40 text-red-300 font-normal">
                             Needs review
                           </Badge>
                         )}
+                         {historicalMismatch?.resolution && (
+                           <Badge variant="outline" className="border-emerald-500/40 text-emerald-300 font-normal">
+                             Reviewed
+                           </Badge>
+                         )}
                         <span className="text-muted-foreground text-sm flex items-center gap-2">
                           <span className="text-border">→</span> {tx.balanceAfter} in stock
                         </span>
@@ -310,6 +379,36 @@ export function StockTab({ variant, data, onRefetch }: any) {
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setShowReconcile(false)}>Cancel</Button>
             <Button disabled={saving} onClick={handleReconcile} className="bg-violet-600 hover:bg-violet-700 text-white">Confirm reconciliation</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={showResolveHistory} onOpenChange={setShowResolveHistory}>
+        <DialogContent aria-describedby="resolve-stock-history-description" className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Review historical entry</DialogTitle>
+            <p id="resolve-stock-history-description" className="text-sm text-muted-foreground">
+              This keeps the original transaction unchanged and appends an auditable review entry.
+            </p>
+          </DialogHeader>
+          <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-4 text-sm">
+            <div className="flex justify-between gap-4"><span className="text-muted-foreground">Entry date</span><strong>{selectedMismatch && format(new Date(selectedMismatch.date), "d MMM yyyy, HH:mm")}</strong></div>
+            <div className="flex justify-between gap-4"><span className="text-muted-foreground">Recorded balance</span><strong>{selectedMismatch?.recordedBalanceAfter}</strong></div>
+            <div className="flex justify-between gap-4"><span className="text-muted-foreground">Ledger balance</span><strong>{selectedMismatch?.ledgerBalance}</strong></div>
+          </div>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="stock-history-resolution-reason">Reason for review</Label>
+            <Textarea
+              id="stock-history-resolution-reason"
+              value={resolutionReason}
+              onChange={event => setResolutionReason(event.target.value)}
+              placeholder="Explain why the ledger balance is the reviewed value."
+              maxLength={2000}
+              rows={4}
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setShowResolveHistory(false)}>Cancel</Button>
+            <Button disabled={saving} onClick={handleResolveHistory} className="bg-violet-600 hover:bg-violet-700 text-white">Save review</Button>
           </div>
         </DialogContent>
       </Dialog>
