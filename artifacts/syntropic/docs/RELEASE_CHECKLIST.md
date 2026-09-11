@@ -132,6 +132,27 @@ pnpm --filter @workspace/syntropic run test:accessibility:acceptance
 pnpm --filter @workspace/syntropic-mobile run check:ios-preview
 ```
 
+## Native mobile release scope
+
+The accepted physical-iPhone results for app version 1.0.0 are recorded in
+[`IOS_REMINDER_ACCEPTANCE_2026-09-10.md`](IOS_REMINDER_ACCEPTANCE_2026-09-10.md).
+
+- [x] The current native release targets iOS only. Android builds are not
+  distributed or represented as release-ready at this stage.
+- [x] On a physical iPhone, a reminder received while Ishiki is closed uses
+  generic lock-screen text by default and shows the medication name only after
+  the user explicitly opts in.
+- [x] On a physical iPhone, restoring notification permission in system Settings
+  restores reminder delivery, and tapping the notification after a cold start
+  opens the correct medication schedule.
+- [x] Repeated reminder actions on a physical iPhone create exactly one dose
+  record.
+- [ ] Before any Android release is enabled, complete tracked follow-up #483 on
+  a real Android device. Confirm closed-app delivery, generic-by-default
+  lock-screen text, explicit name reveal, the Medication reminders notification
+  channel, permission recovery, cold-start routing, and exactly one dose record
+  after repeated actions. This item does not block an iOS-only release.
+
 For the production operations check, provide the current UTC date and the
 privacy-safe evidence fields through the approved configuration manager. These
 values are the only freshness record consumed by the check:
@@ -308,23 +329,34 @@ available. The script does not contact production services.
    Retain every attempt file in that release directory for the same approved
    retention period as the release record. Record every attempt's exact path
    and pass/fail decision, and explicitly link the accepted attempt together
-   with the release ID, reviewer, and commit. A failed assertion blocks release;
+   with the release ID, reviewer, and commit. Record each attempt's SHA-256
+   content digest as part of the release record. A failed assertion blocks release;
    never delete or replace an earlier redacted summary, and never substitute
    browser logs or a copied provider URL.
-- [ ] The accepted staging sign-in evidence record passes
-  `test:auth-google:evidence-release` before release approval. Create
-  `$RELEASE_EVIDENCE_DIR/$RELEASE_ID/google-auth-staging-release-record.json`
-  as a mode-0600 JSON file with only `schemaVersion: 1`,
-  `acceptedAttemptPath`, and an `attempts` list of `{path,status}` entries.
-  List every retained
-  `google-auth-staging-evidence-attempt-*.json` file, including earlier failed
-  attempts, and mark the accepted path `passed`. The check confirms every
-  listed file is still a mode-0600 file in the current release directory,
-  validates the redacted callback and dashboard assertions, and rejects a
-  missing, failed, duplicated, or out-of-directory accepted attempt. Its
-  output contains only the release-record path, evidence paths, statuses, and
-  aggregate counts; it never prints provider URLs, tokens, account details, or
-  browser output.
+- [ ] Generate and validate the accepted staging sign-in evidence record before
+   release approval. The authoring command enumerates every retained attempt,
+   derives only `passed` or `failed` from its redacted assertions, and requires
+   the reviewer to select the accepted path explicitly:
+   ```sh
+   export AUTH_REGRESSION_ACCEPTED_ATTEMPT_PATH="$RELEASE_EVIDENCE_DIR/$RELEASE_ID/google-auth-staging-evidence-attempt-<UTC timestamp>-<random attempt ID>.json"
+   pnpm --filter @workspace/syntropic run write:auth-google:evidence-release -- \
+     "$AUTH_REGRESSION_ACCEPTED_ATTEMPT_PATH"
+   ```
+   It atomically writes
+   `$RELEASE_EVIDENCE_DIR/$RELEASE_ID/google-auth-staging-release-record.json`
+   as a mode-0600 JSON file with only `schemaVersion: 2`,
+   `acceptedAttemptPath`, `acceptedAttemptSha256`, and an `attempts` list of
+   `{path,status,sha256}` entries. Compute each SHA-256 over the exact retained
+   file bytes before review.
+   The command reads no credentials or provider output. The follow-up
+   `test:auth-google:evidence-release` check confirms every listed file is
+   still mode 0600 in the current release directory, validates the redacted
+   callback and dashboard assertions, and rejects a missing, failed,
+   duplicated, or out-of-directory accepted attempt. It also rejects changed
+   evidence, mode changes, duplicate content under another path, or mismatched
+   approved metadata. Both commands output only safe paths, statuses, and
+   aggregate counts; they never print provider URLs, tokens, account details,
+   evidence contents, or browser output.
 - [ ] Authentication, private workspace, household isolation, calendar,
   commitments, money, health, study/work, and sign-out journeys pass.
 - [ ] Keyboard order, visible focus, labels, error association, contrast,
