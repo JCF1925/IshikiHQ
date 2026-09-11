@@ -12,11 +12,18 @@ export { buildOperationsAlert, getOperationsAlertConfig, sendOperationsAlert }
 export type { OperationsAlertConfig, OperationsAlertType }
 
 export const MAX_SUPPRESSED_DELIVERY_FAILURES = 100
+export const MAX_ALERT_OUTAGE_DURATION_SECONDS = 24 * 60 * 60
 const workersWithSuppressedDeliveryFailures = new Map<WorkerName, number>()
 export type WorkerAlertDeliveryFailureState = Map<WorkerName, number>
+const outageStartTimesByFailureState = new WeakMap<
+  WorkerAlertDeliveryFailureState,
+  Map<WorkerName, number>
+>()
 
 export function createWorkerAlertDeliveryFailureState(): WorkerAlertDeliveryFailureState {
-  return new Map()
+  const state = new Map<WorkerName, number>()
+  outageStartTimesByFailureState.set(state, new Map())
+  return state
 }
 
 export type WorkerAlertState = {
@@ -67,21 +74,33 @@ export async function deliverWorkerAlert(
     sendAlert?: typeof sendOperationsAlert
     logError?: (message: string) => void
     deliveryFailureState?: WorkerAlertDeliveryFailureState
+    now?: () => number
   } = {},
 ) {
   const deliveryFailureState = dependencies.deliveryFailureState
     ?? workersWithSuppressedDeliveryFailures
+  const outageStartTimes = outageStartTimesByFailureState.get(deliveryFailureState)
+    ?? new Map<WorkerName, number>()
+  outageStartTimesByFailureState.set(deliveryFailureState, outageStartTimes)
+  const now = dependencies.now ?? Date.now
   const sendAlert = dependencies.sendAlert ?? sendOperationsAlert
   try {
     const delivered = await sendAlert(type, summary, worker, fields)
     if (delivered) {
       const suppressedFailures = deliveryFailureState.get(worker) ?? 0
+      const outageStartedAt = outageStartTimes.get(worker)
       deliveryFailureState.delete(worker)
+      outageStartTimes.delete(worker)
       if (suppressedFailures > 0) {
+        const outageDurationSeconds = Math.min(
+          MAX_ALERT_OUTAGE_DURATION_SECONDS,
+          Math.max(0, Math.floor((now() - (outageStartedAt ?? now())) / 1000)),
+        )
         ;(dependencies.logError ?? console.error)(JSON.stringify({
           event: 'alert_delivery_recovered',
           worker,
           suppressedFailures,
+          outageDurationSeconds,
           errorCategory: 'alerting',
           errorCode: 'DELIVERY_RECOVERED',
         }))
@@ -93,6 +112,9 @@ export async function deliverWorkerAlert(
     // observable without exposing a URL, response body, or credentials.
     // The map is bounded by WorkerName and each worker's count is capped.
     const suppressedFailures = deliveryFailureState.get(worker) ?? 0
+    if (suppressedFailures === 0) {
+      outageStartTimes.set(worker, now())
+    }
     deliveryFailureState.set(
       worker,
       Math.min(MAX_SUPPRESSED_DELIVERY_FAILURES, suppressedFailures + 1),
