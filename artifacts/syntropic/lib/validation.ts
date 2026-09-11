@@ -48,6 +48,10 @@ export const presignedUploadSchema = z.object({
   isPublic: z.literal(false).default(false),
 }).strict()
 
+export const receiptAttachSchema = z.object({
+  uploadId: z.string().trim().min(1).max(100),
+}).strict()
+
 export const accountCreateSchema = z.object({
   name: z.string().trim().min(1).max(120),
   type: accountTypeSchema.default('transaction'),
