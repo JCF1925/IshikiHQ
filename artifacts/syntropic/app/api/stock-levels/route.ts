@@ -3,7 +3,12 @@ import { NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/db'
 import { stockReconciliationSchema, stockUpdateSchema, validationError } from '@/lib/medication-validation'
-import { getMedicationStockDiagnostic, summarizeStockLedger, withMedicationStockTransaction } from '@/lib/medication-stock'
+import {
+  formatHistoricalStockMismatchResolutionNote,
+  getMedicationStockDiagnostic,
+  summarizeStockLedger,
+  withMedicationStockTransaction,
+} from '@/lib/medication-stock'
 
 export async function GET() {
   const session = await auth()
@@ -18,7 +23,7 @@ export async function GET() {
     const transactions = await tx.stockTransaction.findMany({
       where: { userId, medicationId: { in: levels.map(level => level.medicationId) } },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-      select: { id: true, medicationId: true, date: true, quantityChange: true, balanceAfter: true, notes: true },
+      select: { id: true, medicationId: true, date: true, quantityChange: true, balanceAfter: true, notes: true, auditKind: true },
     })
     const entriesByMedication = new Map<string, {
       id: string
@@ -26,6 +31,7 @@ export async function GET() {
       quantityChange: number
       balanceAfter: number
       notes: string | null
+      auditKind: 'reconciliation' | 'mismatch_resolution' | null
     }[]>()
     for (const transaction of transactions) {
       const entries = entriesByMedication.get(transaction.medicationId) ?? []
@@ -57,6 +63,39 @@ export async function POST(request: Request) {
   const result = await withMedicationStockTransaction(userId, existing.medicationId, async tx => {
     const diagnostic = await getMedicationStockDiagnostic(tx, userId, existing.medicationId)
     if (!diagnostic) return { kind: 'not_found' as const }
+    if (body.action === 'resolve_mismatch') {
+      const mismatch = diagnostic.historicalMismatches.find(entry => entry.id === body.mismatchId)
+      if (!mismatch) return { kind: 'mismatch_not_found' as const }
+      if (mismatch.resolution) return { kind: 'already_resolved' as const, diagnostic }
+      if (
+        Math.abs(mismatch.recordedBalanceAfter - body.expectedRecordedBalance) > 0.0000001
+        || Math.abs(mismatch.ledgerBalance - body.expectedLedgerBalance) > 0.0000001
+      ) {
+        return { kind: 'stale' as const, diagnostic }
+      }
+      const resolution = await tx.stockTransaction.create({
+        data: {
+          userId,
+          medicationId: existing.medicationId,
+          type: 'adjustment',
+          quantityChange: 0,
+          balanceAfter: diagnostic.currentQuantity,
+          auditKind: 'mismatch_resolution',
+          notes: formatHistoricalStockMismatchResolutionNote({
+            mismatchId: mismatch.id,
+            beforeRecordedBalance: mismatch.recordedBalanceAfter,
+            afterLedgerBalance: mismatch.ledgerBalance,
+            reason: body.reason,
+          }),
+        },
+      })
+      const resolvedDiagnostic = await getMedicationStockDiagnostic(tx, userId, existing.medicationId)
+      return {
+        kind: 'resolved' as const,
+        diagnostic: resolvedDiagnostic,
+        resolution,
+      }
+    }
     if (
       Math.abs(diagnostic.currentQuantity - body.expectedCurrentQuantity) > 0.0000001
       || Math.abs(diagnostic.ledgerQuantity - body.expectedLedgerQuantity) > 0.0000001
@@ -77,6 +116,7 @@ export async function POST(request: Request) {
         type: 'adjustment',
         quantityChange: diagnostic.mismatchQuantity,
         balanceAfter: diagnostic.ledgerQuantity,
+        auditKind: 'reconciliation',
         notes: `Historical stock reconciliation: current stock ${diagnostic.currentQuantity} aligned to ledger balance ${diagnostic.ledgerQuantity}.`,
       },
     })
@@ -95,6 +135,8 @@ export async function POST(request: Request) {
   })
 
   if (result.kind === 'not_found') return NextResponse.json({ error: 'Stock level was not found' }, { status: 404 })
+  if (result.kind === 'mismatch_not_found') return NextResponse.json({ error: 'Historical stock mismatch was not found' }, { status: 404 })
+  if (result.kind === 'already_resolved') return NextResponse.json({ error: 'Historical stock mismatch was already resolved', diagnostic: result.diagnostic }, { status: 409 })
   if (result.kind === 'stale') return NextResponse.json({ error: 'Stock changed while it was being reviewed', diagnostic: result.diagnostic }, { status: 409 })
   if (result.kind === 'history_inconsistent') {
     return NextResponse.json({
@@ -103,6 +145,7 @@ export async function POST(request: Request) {
     }, { status: 409 })
   }
   if (result.kind === 'already_reconciled') return NextResponse.json({ error: 'Stock is already reconciled', diagnostic: result.diagnostic }, { status: 409 })
+  if (result.kind === 'resolved') return NextResponse.json(result)
   return NextResponse.json(result)
 }
 
