@@ -41,8 +41,12 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   }
   const updated = await prisma.$transaction(async tx => {
     const current = await tx.pharmacyOrder.findFirst({ where: { id, userId } }); if (!current) throw new Error('NOT_FOUND')
-    await tx.pharmacyOrder.update({ where: { id }, data: { status: target, notes: body.notes === undefined ? current.notes : body.notes } })
-    await tx.pharmacyOrderEvent.create({ data: { userId, orderId: id, fromStatus: current.status, toStatus: target, details: { action: body.action } } })
+    if (current.status !== target || body.notes !== undefined) {
+      await tx.pharmacyOrder.update({ where: { id }, data: { status: target, notes: body.notes === undefined ? current.notes : body.notes } })
+    }
+    if (current.status !== target) {
+      await tx.pharmacyOrderEvent.create({ data: { userId, orderId: id, fromStatus: current.status, toStatus: target, details: { action: body.action } } })
+    }
     if (body.lines) {
       if (body.lines.some(line => line.status === 'received')) throw new Error('INVALID_LINE')
       for (const line of body.lines) await tx.pharmacyOrderLine.updateMany({ where: { orderId: id, medicationId: line.medicationId }, data: { quantity: line.quantity, status: line.status ?? 'ordered', substitutionNote: line.substitutionNote ?? null } })
