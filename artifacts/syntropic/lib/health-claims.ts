@@ -30,6 +30,7 @@ export type MedicareClaimData = {
   financialYear: string | null
   isForecast: boolean
   countsToSafetyNet: boolean
+  appointmentId: string | null
 }
 
 export type PrivateHealthClaimData = {
@@ -262,6 +263,7 @@ function normaliseMedicare(fields: Record<string, string>): { data: MedicareClai
       financialYear: getField(fields, [...MEDICARE_ALIASES.financialYear]) || null,
       isForecast: parseBoolean(getField(fields, [...MEDICARE_ALIASES.isForecast]), false),
       countsToSafetyNet: parseBoolean(getField(fields, [...MEDICARE_ALIASES.countsToSafetyNet]), true),
+      appointmentId: null,
     },
     errors,
   }
@@ -304,7 +306,10 @@ function normalisePrivate(fields: Record<string, string>): { data: PrivateHealth
 }
 
 export function claimFingerprint(kind: HealthClaimKind, data: HealthClaimData): string {
-  const canonical = JSON.stringify({ kind, data })
+  const fingerprintData = kind === 'medicare'
+    ? Object.fromEntries(Object.entries(data).filter(([field]) => field !== 'appointmentId'))
+    : data
+  const canonical = JSON.stringify({ kind, data: fingerprintData })
   return createHash('sha256').update(canonical).digest('hex')
 }
 
@@ -315,7 +320,12 @@ export function validateClaimData(kind: HealthClaimKind, input: unknown): { data
       fields[key(name)] = value == null ? '' : String(value)
     }
   }
-  return kind === 'medicare' ? normaliseMedicare(fields) : normalisePrivate(fields)
+  const result = kind === 'medicare' ? normaliseMedicare(fields) : normalisePrivate(fields)
+  if (kind === 'medicare' && input && typeof input === 'object') {
+    const appointmentId = (input as Record<string, unknown>).appointmentId
+    ;(result.data as MedicareClaimData).appointmentId = typeof appointmentId === 'string' && appointmentId.trim() ? appointmentId.trim() : null
+  }
+  return result
 }
 
 export function applyHealthClaimReviewEdits(
@@ -340,6 +350,10 @@ export function applyHealthClaimReviewEdits(
   const next = { ...existing } as Record<string, unknown>
   for (const field of editableFields) {
     if (Object.prototype.hasOwnProperty.call(submitted, field)) next[field] = submitted[field]
+  }
+  if (kind === 'medicare' && Object.prototype.hasOwnProperty.call(submitted, 'appointmentId')) {
+    const appointmentId = submitted.appointmentId
+    next.appointmentId = typeof appointmentId === 'string' && appointmentId.trim() ? appointmentId.trim() : null
   }
   return next as HealthClaimData
 }
@@ -450,10 +464,18 @@ function parseDelimitedRows(text: string, kind: HealthClaimKind): ParsedHealthCl
   for (const delimiter of [',', '|', '\t', ';']) {
     const rows = parseSeparatedRows(text, delimiter)
     if (rows.length < 2) continue
-    const headerIndex = rows.findIndex((candidate) => hasRequiredHeaders(candidate.map((value) => value.trim()), kind))
-    if (headerIndex >= 0) {
-      const headers = rows[headerIndex].map((value) => value.trim())
-      return rowsFromHeaders(headers, rows.slice(headerIndex + 1), headerIndex + 2, kind)
+    const headerIndexes = rows
+      .map((candidate, index) => hasRequiredHeaders(candidate.map((value) => value.trim()), kind) ? index : -1)
+      .filter((index) => index >= 0)
+    if (headerIndexes.length) {
+      return headerIndexes.flatMap((headerIndex, sectionIndex) => {
+        const headers = rows[headerIndex].map((value) => value.trim())
+        const nextHeaderIndex = headerIndexes[sectionIndex + 1] ?? rows.length
+        const values = rows
+          .slice(headerIndex + 1, nextHeaderIndex)
+          .filter((row) => row.length >= 2 && row.some((value) => parseAustralianDate(value) != null))
+        return rowsFromHeaders(headers, values, headerIndex + 2, kind)
+      })
     }
   }
 
@@ -463,9 +485,17 @@ function parseDelimitedRows(text: string, kind: HealthClaimKind): ParsedHealthCl
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => line.split(/\s{2,}|\t+/).map((value) => value.trim()))
-  const headerIndex = rows.findIndex((candidate) => hasRequiredHeaders(candidate, kind))
-  if (headerIndex >= 0) {
-    return rowsFromHeaders(rows[headerIndex], rows.slice(headerIndex + 1), headerIndex + 2, kind)
+  const headerIndexes = rows
+    .map((candidate, index) => hasRequiredHeaders(candidate, kind) ? index : -1)
+    .filter((index) => index >= 0)
+  if (headerIndexes.length) {
+    return headerIndexes.flatMap((headerIndex, sectionIndex) => {
+      const nextHeaderIndex = headerIndexes[sectionIndex + 1] ?? rows.length
+      const values = rows
+        .slice(headerIndex + 1, nextHeaderIndex)
+        .filter((row) => row.length >= 2 && row.some((value) => parseAustralianDate(value) != null))
+      return rowsFromHeaders(rows[headerIndex], values, headerIndex + 2, kind)
+    })
   }
   return []
 }
@@ -619,7 +649,7 @@ async function extractScannedMedicareText(buffer: Buffer, pageCount: number): Pr
       timeout: OCR_TIMEOUT_MS,
       maxBuffer: 1024 * 1024,
     })
-    const output: OcrLine[] = []
+    const pageLines: OcrLine[][] = []
     const pageImages = (await readdir(directory))
       .filter((name) => /^page-\d+\.png$/.test(name))
       .sort((a, b) => Number(a.match(/\d+/)?.[0]) - Number(b.match(/\d+/)?.[0]))
@@ -636,12 +666,15 @@ async function extractScannedMedicareText(buffer: Buffer, pageCount: number): Pr
         timeout: OCR_TIMEOUT_MS,
         maxBuffer: MAX_OCR_OUTPUT_CHARS,
       })
-      output.push(...ocrLinesFromTsv(stdout))
+      pageLines.push(ocrLinesFromTsv(stdout))
     }
+    const pages = pageLines.map((lines) => lines.map((line) => line.text).join('\n'))
+    const output = pages.flatMap((page) => page ? [page] : [])
     if (!output.length) return { text: '', confidence: 0 }
+    const lines = pageLines.flat()
     return {
-      text: output.map((line) => line.text).join('\n'),
-      confidence: output.reduce((sum, line) => sum + line.confidence, 0) / output.length,
+      text: output.join('\n\n'),
+      confidence: lines.reduce((sum, line) => sum + line.confidence, 0) / lines.length,
     }
   } finally {
     await rm(directory, { recursive: true, force: true })
