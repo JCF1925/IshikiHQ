@@ -4,17 +4,23 @@ import HealthKit
 
 public final class SyntropicHealthKitModule: Module {
   private let healthStore = HKHealthStore()
+  private var smokeSample: HKQuantitySample?
   private let dateFormatter: ISO8601DateFormatter = {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return formatter
   }()
 
+  private enum SampleMapping {
+    case quantity(unit: HKUnit, unitName: String)
+    case category(unitName: String)
+    case bloodPressure
+  }
+
   private struct HealthTypeDescriptor {
     let type: String
     let sampleType: HKSampleType
-    let unit: HKUnit?
-    let unitName: String
+    let mapping: SampleMapping
   }
 
   public func definition() -> ModuleDefinition {
@@ -98,6 +104,76 @@ public final class SyntropicHealthKitModule: Module {
       }
     }
 
+    // Development-only fixture hooks. The sample stays private to this
+    // module so its value and identifier never cross the native bridge.
+    AsyncFunction("writeSmokeSample") { (type: String, promise: Promise) in
+      guard type == "activity" else {
+        promise.reject(self.moduleError("The HealthKit smoke sample is only supported for Activity."))
+        return
+      }
+      guard HKHealthStore.isHealthDataAvailable() else {
+        promise.reject(self.moduleError("Apple Health is not available on this device."))
+        return
+      }
+      guard let sampleType = HKObjectType.quantityType(forIdentifier: .stepCount) else {
+        promise.reject(self.moduleError("Activity samples are unavailable on this iOS version."))
+        return
+      }
+
+      let now = Date()
+      let sample = HKQuantitySample(
+        type: sampleType,
+        quantity: HKQuantity(unit: .count(), doubleValue: 1),
+        start: now.addingTimeInterval(-1),
+        end: now
+      )
+      let shareTypes: Set<HKSampleType> = [sampleType]
+
+      self.healthStore.requestAuthorization(toShare: shareTypes, read: []) { success, error in
+        if let error {
+          promise.reject(error)
+          return
+        }
+        guard success else {
+          promise.reject(self.moduleError("HealthKit write access was not granted for the smoke sample."))
+          return
+        }
+
+        self.healthStore.save(sample) { saved, saveError in
+          if let saveError {
+            promise.reject(saveError)
+            return
+          }
+          guard saved else {
+            promise.reject(self.moduleError("HealthKit did not save the smoke sample."))
+            return
+          }
+          self.smokeSample = sample
+          promise.resolve(nil)
+        }
+      }
+    }
+
+    AsyncFunction("removeSmokeSample") { (promise: Promise) in
+      guard let sample = self.smokeSample else {
+        promise.resolve(nil)
+        return
+      }
+
+      self.healthStore.delete(sample) { success, error in
+        if let error {
+          promise.reject(error)
+          return
+        }
+        guard success else {
+          promise.reject(self.moduleError("HealthKit did not remove the smoke sample."))
+          return
+        }
+        self.smokeSample = nil
+        promise.resolve(nil)
+      }
+    }
+
     AsyncFunction("read") { (type: String, anchor: String?, promise: Promise) in
       do {
         let descriptor = try self.descriptor(for: type)
@@ -118,17 +194,15 @@ public final class SyntropicHealthKitModule: Module {
           }
 
           let formatter = self.dateFormatter
-          let mappedSamples = (samples ?? []).compactMap {
-            self.mapSample($0, descriptor: descriptor, formatter: formatter)
+          let mappedSamples = (samples ?? []).flatMap {
+            self.mapSamples($0, descriptor: descriptor, formatter: formatter)
           }
           let deletionDate = formatter.string(from: Date())
-          let mappedDeletions = (deletedObjects ?? []).map { deletedObject in
-            [
-              "healthKitUuid": deletedObject.uuid.uuidString,
-              "sampleType": descriptor.type,
-              "deletedAt": deletionDate,
-            ]
-          }
+          let mappedDeletions = self.mapDeletions(
+            deletedObjects ?? [],
+            descriptor: descriptor,
+            deletedAt: deletionDate
+          )
 
           var result: [String: Any] = [
             "samples": mappedSamples,
@@ -156,18 +230,19 @@ public final class SyntropicHealthKitModule: Module {
       return HealthTypeDescriptor(
         type: type,
         sampleType: sampleType,
-        unit: HKUnit.count().unitDivided(by: .minute()),
-        unitName: "count/min"
+        mapping: .quantity(
+          unit: HKUnit.count().unitDivided(by: .minute()),
+          unitName: "count/min"
+        )
       )
     case "blood_pressure":
-      guard let sampleType = HKObjectType.quantityType(forIdentifier: .bloodPressureSystolic) else {
+      guard let sampleType = HKObjectType.correlationType(forIdentifier: .bloodPressure) else {
         throw moduleError("Blood-pressure samples are unavailable on this iOS version.")
       }
       return HealthTypeDescriptor(
         type: type,
         sampleType: sampleType,
-        unit: .millimeterOfMercury(),
-        unitName: "mmHg"
+        mapping: .bloodPressure
       )
     case "sleep":
       guard let sampleType = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) else {
@@ -176,8 +251,7 @@ public final class SyntropicHealthKitModule: Module {
       return HealthTypeDescriptor(
         type: type,
         sampleType: sampleType,
-        unit: nil,
-        unitName: "category"
+        mapping: .category(unitName: "category")
       )
     case "activity":
       guard let sampleType = HKObjectType.quantityType(forIdentifier: .stepCount) else {
@@ -186,8 +260,7 @@ public final class SyntropicHealthKitModule: Module {
       return HealthTypeDescriptor(
         type: type,
         sampleType: sampleType,
-        unit: .count(),
-        unitName: "count"
+        mapping: .quantity(unit: .count(), unitName: "count")
       )
     case "body_measurements":
       guard let sampleType = HKObjectType.quantityType(forIdentifier: .bodyMass) else {
@@ -196,8 +269,10 @@ public final class SyntropicHealthKitModule: Module {
       return HealthTypeDescriptor(
         type: type,
         sampleType: sampleType,
-        unit: .gramUnit(with: .kilo),
-        unitName: "kg"
+        mapping: .quantity(
+          unit: .gramUnit(with: .kilo),
+          unitName: "kg"
+        )
       )
     case "temperature":
       guard let sampleType = HKObjectType.quantityType(forIdentifier: .bodyTemperature) else {
@@ -206,8 +281,7 @@ public final class SyntropicHealthKitModule: Module {
       return HealthTypeDescriptor(
         type: type,
         sampleType: sampleType,
-        unit: .degreeCelsius(),
-        unitName: "°C"
+        mapping: .quantity(unit: .degreeCelsius(), unitName: "°C")
       )
     case "oxygen":
       guard let sampleType = HKObjectType.quantityType(forIdentifier: .oxygenSaturation) else {
@@ -216,8 +290,7 @@ public final class SyntropicHealthKitModule: Module {
       return HealthTypeDescriptor(
         type: type,
         sampleType: sampleType,
-        unit: .percent(),
-        unitName: "%"
+        mapping: .quantity(unit: .percent(), unitName: "%")
       )
     case "respiratory":
       guard let sampleType = HKObjectType.quantityType(forIdentifier: .respiratoryRate) else {
@@ -226,39 +299,138 @@ public final class SyntropicHealthKitModule: Module {
       return HealthTypeDescriptor(
         type: type,
         sampleType: sampleType,
-        unit: HKUnit.count().unitDivided(by: .minute()),
-        unitName: "count/min"
+        mapping: .quantity(
+          unit: HKUnit.count().unitDivided(by: .minute()),
+          unitName: "count/min"
+        )
       )
     default:
       throw moduleError("Unsupported HealthKit type: \(type)")
     }
   }
 
-  private func mapSample(
+  private func mapSamples(
     _ sample: HKSample,
     descriptor: HealthTypeDescriptor,
     formatter: ISO8601DateFormatter
-  ) -> [String: Any]? {
-    let value: Double
+  ) -> [[String: Any]] {
+    if case .bloodPressure = descriptor.mapping, let correlation = sample as? HKCorrelation {
+      // Correlation UUIDs are the only deletion IDs HealthKit returns for a
+      // blood-pressure record. Deriving component IDs from that UUID keeps
+      // each imported component distinct and lets deletion tombstones match
+      // both rows when the parent correlation is removed.
+      return correlation.objects.compactMap { object in
+        guard let quantitySample = object as? HKQuantitySample else {
+          return nil
+        }
 
-    if let quantitySample = sample as? HKQuantitySample, let unit = descriptor.unit {
-      value = quantitySample.quantity.doubleValue(for: unit)
-    } else if let categorySample = sample as? HKCategorySample {
-      value = Double(categorySample.value)
-    } else {
-      return nil
+        let component: String
+        if quantitySample.quantityType.identifier == HKQuantityTypeIdentifier.bloodPressureSystolic.rawValue {
+          component = "systolic"
+        } else if quantitySample.quantityType.identifier == HKQuantityTypeIdentifier.bloodPressureDiastolic.rawValue {
+          component = "diastolic"
+        } else {
+          return nil
+        }
+
+        return self.mapQuantitySample(
+          quantitySample,
+          id: "\(correlation.uuid.uuidString):\(component)",
+          type: descriptor.type,
+          unit: .millimeterOfMercury(),
+          unitName: "mmHg",
+          formatter: formatter,
+          metadata: [
+            "component": component,
+            "correlationUuid": correlation.uuid.uuidString,
+          ]
+        )
+      }.sorted { left, right in
+        (left["metadata"] as? [String: String])?["component"] == "systolic"
+          && (right["metadata"] as? [String: String])?["component"] == "diastolic"
+      }
     }
 
-    return [
-      "id": sample.uuid.uuidString,
-      "type": descriptor.type,
-      "value": value,
-      "unit": descriptor.unitName,
+    switch descriptor.mapping {
+    case let .quantity(unit, unitName):
+      guard let quantitySample = sample as? HKQuantitySample else {
+        return []
+      }
+      return [self.mapQuantitySample(
+        quantitySample,
+        id: sample.uuid.uuidString,
+        type: descriptor.type,
+        unit: unit,
+        unitName: unitName,
+        formatter: formatter
+      )]
+    case let .category(unitName):
+      guard let categorySample = sample as? HKCategorySample else {
+        return []
+      }
+      return [[
+        "id": sample.uuid.uuidString,
+        "type": descriptor.type,
+        "value": Double(categorySample.value),
+        "unit": unitName,
+        "startDate": formatter.string(from: sample.startDate),
+        "endDate": formatter.string(from: sample.endDate),
+        "source": sample.sourceRevision.source.bundleIdentifier,
+        "sourceRevision": sample.sourceRevision.version ?? "",
+      ]]
+    case .bloodPressure:
+      return []
+    }
+  }
+
+  private func mapQuantitySample(
+    _ sample: HKQuantitySample,
+    id: String,
+    type: String,
+    unit: HKUnit,
+    unitName: String,
+    formatter: ISO8601DateFormatter,
+    metadata: [String: String] = [:]
+  ) -> [String: Any] {
+    var mapped: [String: Any] = [
+      "id": id,
+      "type": type,
+      "value": sample.quantity.doubleValue(for: unit),
+      "unit": unitName,
       "startDate": formatter.string(from: sample.startDate),
       "endDate": formatter.string(from: sample.endDate),
       "source": sample.sourceRevision.source.bundleIdentifier,
       "sourceRevision": sample.sourceRevision.version ?? "",
     ]
+    if !metadata.isEmpty {
+      mapped["metadata"] = metadata
+    }
+    return mapped
+  }
+
+  private func mapDeletions(
+    _ deletedObjects: [HKDeletedObject],
+    descriptor: HealthTypeDescriptor,
+    deletedAt: String
+  ) -> [[String: Any]] {
+    deletedObjects.flatMap { deletedObject in
+      let ids: [String]
+      if case .bloodPressure = descriptor.mapping {
+        ids = ["systolic", "diastolic"].map {
+          "\(deletedObject.uuid.uuidString):\($0)"
+        }
+      } else {
+        ids = [deletedObject.uuid.uuidString]
+      }
+
+      return ids.map { healthKitUuid in
+        [
+          "healthKitUuid": healthKitUuid,
+          "sampleType": descriptor.type,
+          "deletedAt": deletedAt,
+        ]
+      }
+    }
   }
 
   private func encodeAnchor(_ anchor: HKQueryAnchor) -> String? {
