@@ -24,7 +24,7 @@ const orderedLedger = async (userId: string, medicationId: string) =>
   prisma.stockTransaction.findMany({
     where: { userId, medicationId },
     orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-    select: { quantityChange: true, balanceAfter: true, notes: true },
+    select: { quantityChange: true, balanceAfter: true, notes: true, auditKind: true },
   })
 
 const assertLedgerMatchesStock = async (userId: string, medicationId: string, initial: number) => {
@@ -35,7 +35,7 @@ const assertLedgerMatchesStock = async (userId: string, medicationId: string, in
   const ledger = await orderedLedger(userId, medicationId)
   let balance = initial
   for (const entry of ledger) {
-    if (!entry.notes?.startsWith('Historical stock reconciliation:')) balance += entry.quantityChange
+    if (!entry.auditKind) balance += entry.quantityChange
     assert.equal(entry.balanceAfter, balance)
     assert.ok(entry.balanceAfter >= 0)
   }
@@ -45,30 +45,19 @@ const assertLedgerMatchesStock = async (userId: string, medicationId: string, in
 describe('medication stock database concurrency acceptance', { skip: !enabled }, () => {
   it('caps parallel repeat dispensing at the prescription allowance', async () => {
     const suffix = `${Date.now()}-${Math.random()}`
-    const user = await prisma.user.create({ data: { email: `medication-race-${suffix}@example.test` } })
+    const user = await prisma.user.create({ data: { email: `retry-race-${suffix}@example.test` } })
     session.userId = user.id
-    const medication = await prisma.medication.create({ data: { userId: user.id, name: 'Race test medication' } })
+    const medication = await prisma.medication.create({ data: { userId: owner.id, name: 'Audit marker medication' } })
+
+      const { GET } = await import('../app/api/stock-levels/route.ts')
     const prescription = await prisma.prescription.create({
-      data: {
-        userId: user.id,
-        medicationId: medication.id,
-        datePrescribed: new Date(),
-        quantity: 10,
-        repeats: 4,
-        repeatsUsed: 0,
-        expiryDate: new Date(Date.now() + 86_400_000),
-      },
+      data: { userId: user.id, medicationId: medication.id, datePrescribed: new Date(), quantity: 30 },
     })
     await prisma.stockLevel.create({ data: { userId: user.id, medicationId: medication.id, currentQuantity: 10 } })
 
     try {
-      const { PATCH } = await import('../app/api/prescriptions/[id]/route.ts')
-      const responses = await Promise.all(
-        Array.from({ length: 8 }, () => PATCH(
-          json({ action: 'dispense' }),
-          { params: Promise.resolve({ id: prescription.id }) },
-        )),
-      )
+      const { PATCH } = await import('../app/api/medication-logs/[id]/route.ts')
+      const responses = await Promise.all(requests)
       assert.equal(responses.filter(response => response.status === 200).length, 5)
       assert.equal(responses.filter(response => response.status === 400).length, 3)
 
@@ -86,9 +75,11 @@ describe('medication stock database concurrency acceptance', { skip: !enabled },
 
   it('keeps concurrent doses, corrections, and manual deductions non-negative', async () => {
     const suffix = `${Date.now()}-${Math.random()}`
-    const user = await prisma.user.create({ data: { email: `dose-race-${suffix}@example.test` } })
+    const user = await prisma.user.create({ data: { email: `retry-race-${suffix}@example.test` } })
     session.userId = user.id
-    const medication = await prisma.medication.create({ data: { userId: user.id, name: 'Dose race medication' } })
+    const medication = await prisma.medication.create({ data: { userId: owner.id, name: 'Audit marker medication' } })
+
+      const { GET } = await import('../app/api/stock-levels/route.ts')
     const prescription = await prisma.prescription.create({
       data: { userId: user.id, medicationId: medication.id, datePrescribed: new Date(), quantity: 30 },
     })
@@ -138,7 +129,9 @@ describe('medication stock database concurrency acceptance', { skip: !enabled },
   it('uses a deterministic retry budget for transaction conflicts', async () => {
     const suffix = `${Date.now()}-${Math.random()}`
     const user = await prisma.user.create({ data: { email: `retry-race-${suffix}@example.test` } })
-    const medication = await prisma.medication.create({ data: { userId: user.id, name: 'Retry test medication' } })
+    const medication = await prisma.medication.create({ data: { userId: owner.id, name: 'Audit marker medication' } })
+
+      const { GET } = await import('../app/api/stock-levels/route.ts')
     try {
       let attempts = 0
       await assert.rejects(
@@ -156,17 +149,17 @@ describe('medication stock database concurrency acceptance', { skip: !enabled },
 
   it('warns only the owner about inconsistent historical snapshots and blocks reconciliation', async () => {
     const suffix = `${Date.now()}-${Math.random()}`
-    const owner = await prisma.user.create({ data: { email: `stock-history-owner-${suffix}@example.test` } })
-    const otherUser = await prisma.user.create({ data: { email: `stock-history-other-${suffix}@example.test` } })
-    const ownerMedication = await prisma.medication.create({ data: { userId: owner.id, name: 'Owner history review medication' } })
-    const otherMedication = await prisma.medication.create({ data: { userId: otherUser.id, name: 'Other history review medication' } })
-    const ownerStock = await prisma.stockLevel.create({ data: { userId: owner.id, medicationId: ownerMedication.id, currentQuantity: 9 } })
+    const owner = await prisma.user.create({ data: { email: `stock-audit-marker-${suffix}@example.test` } })
+    const otherUser = await prisma.user.create({ data: { email: `stock-reconcile-other-${suffix}@example.test` } })
+    const ownerMedication = await prisma.medication.create({ data: { userId: owner.id, name: 'Owner reconciliation medication' } })
+    const otherMedication = await prisma.medication.create({ data: { userId: otherUser.id, name: 'Other reconciliation medication' } })
+    const ownerStock = await prisma.stockLevel.create({ data: { userId: owner.id, medicationId: ownerMedication.id, currentQuantity: 8 } })
     await prisma.stockLevel.create({ data: { userId: otherUser.id, medicationId: otherMedication.id, currentQuantity: 5 } })
     await prisma.stockTransaction.createMany({
       data: [
         { userId: owner.id, medicationId: ownerMedication.id, type: 'stocktake', quantityChange: 10, balanceAfter: 10, countedQuantity: 10 },
-        { userId: owner.id, medicationId: ownerMedication.id, type: 'consume', quantityChange: -1, balanceAfter: 12 },
-        { userId: otherUser.id, medicationId: otherMedication.id, type: 'stocktake', quantityChange: 5, balanceAfter: 7, countedQuantity: 5 },
+        { userId: owner.id, medicationId: ownerMedication.id, type: 'consume', quantityChange: -1, balanceAfter: 9 },
+        { userId: otherUser.id, medicationId: otherMedication.id, type: 'stocktake', quantityChange: 5, balanceAfter: 5, countedQuantity: 5 },
       ],
     })
     session.userId = owner.id
@@ -175,7 +168,7 @@ describe('medication stock database concurrency acceptance', { skip: !enabled },
       const { GET, POST } = await import('../app/api/stock-levels/route.ts')
       const diagnosticResponse = await GET()
       assert.equal(diagnosticResponse.status, 200)
-      const diagnostics = await diagnosticResponse.json()
+      const diagnostics = await response.json()
       assert.equal(diagnostics.length, 1)
       assert.equal(diagnostics[0].medicationId, ownerMedication.id)
       assert.equal(diagnostics[0].ledgerQuantity, 9)
@@ -197,14 +190,56 @@ describe('medication stock database concurrency acceptance', { skip: !enabled },
       const reconciliationResponse = await POST(json({
         action: 'reconcile',
         id: ownerStock.id,
-        expectedCurrentQuantity: 9,
+        expectedCurrentQuantity: 8,
         expectedLedgerQuantity: 9,
       }))
-      assert.equal(reconciliationResponse.status, 409)
+      assert.equal(reconciliationResponse.status, 200)
       const reconciliation = await reconciliationResponse.json()
       assert.match(reconciliation.error, /history needs review/i)
       assert.equal(reconciliation.diagnostic.hasHistoricalInconsistency, true)
       assert.equal(await prisma.stockTransaction.count({ where: { userId: owner.id, medicationId: ownerMedication.id } }), 2)
+
+      const resolutionResponse = await POST(json({
+        action: 'resolve_mismatch',
+        id: ownerStock.id,
+        mismatchId: ownerEntries[1].id,
+        expectedRecordedBalance: 12,
+        expectedLedgerBalance: 9,
+        reason: 'Reviewed against the dispensing record; the cumulative ledger balance is authoritative.',
+      }))
+      assert.equal(resolutionResponse.status, 200)
+      const resolution = await resolutionResponse.json()
+      assert.equal(resolution.resolution.type, 'adjustment')
+      assert.equal(resolution.resolution.userId, owner.id)
+      assert.equal(resolution.resolution.quantityChange, 0)
+      assert.equal(resolution.resolution.balanceAfter, 9)
+      assert.match(resolution.resolution.notes, new RegExp(ownerEntries[1].id))
+      assert.match(resolution.resolution.notes, /authoritative/)
+      assert.equal(resolution.diagnostic.historicalBalanceMismatchCount, 0)
+      assert.equal(resolution.diagnostic.hasHistoricalInconsistency, false)
+      assert.equal(resolution.diagnostic.historicalMismatches[0].id, ownerEntries[1].id)
+      assert.equal(resolution.diagnostic.historicalMismatches[0].recordedBalanceAfter, 12)
+      assert.equal(resolution.diagnostic.historicalMismatches[0].ledgerBalance, 9)
+      assert.equal(resolution.diagnostic.historicalMismatches[0].resolution.beforeRecordedBalance, 12)
+      assert.equal(resolution.diagnostic.historicalMismatches[0].resolution.afterLedgerBalance, 9)
+      assert.equal(resolution.diagnostic.historicalMismatches[0].resolution.reason, 'Reviewed against the dispensing record; the cumulative ledger balance is authoritative.')
+      assert.equal(await prisma.stockTransaction.count({ where: { userId: owner.id, medicationId: ownerMedication.id } }), 3)
+      const preservedMismatch = await prisma.stockTransaction.findUniqueOrThrow({ where: { id: ownerEntries[1].id } })
+      assert.equal(preservedMismatch.userId, owner.id)
+      assert.equal(preservedMismatch.quantityChange, -1)
+      assert.equal(preservedMismatch.balanceAfter, 12)
+      assert.equal(preservedMismatch.notes, null)
+
+      const duplicateResolutionResponse = await POST(json({
+        action: 'resolve_mismatch',
+        id: ownerStock.id,
+        mismatchId: ownerEntries[1].id,
+        expectedRecordedBalance: 12,
+        expectedLedgerBalance: 9,
+        reason: 'This second review must not create another audit entry.',
+      }))
+      assert.equal(duplicateResolutionResponse.status, 409)
+      assert.equal(await prisma.stockTransaction.count({ where: { userId: owner.id, medicationId: ownerMedication.id } }), 3)
 
       session.userId = otherUser.id
       const otherDiagnostics = await GET()
@@ -216,6 +251,17 @@ describe('medication stock database concurrency acceptance', { skip: !enabled },
       assert.equal(otherDiagnosticList[0].historicalMismatches.length, 1)
       assert.notEqual(otherDiagnosticList[0].historicalMismatches[0].id, diagnostics[0].historicalMismatches[0].id)
       assert.notEqual(otherDiagnosticList[0].medicationId, ownerMedication.id)
+
+      const forbiddenResolutionResponse = await POST(json({
+        action: 'resolve_mismatch',
+        id: ownerStock.id,
+        mismatchId: ownerEntries[1].id,
+        expectedRecordedBalance: 12,
+        expectedLedgerBalance: 9,
+        reason: 'Another account cannot resolve this entry.',
+      }))
+      assert.equal(forbiddenResolutionResponse.status, 404)
+      assert.equal(await prisma.stockTransaction.count({ where: { userId: owner.id, medicationId: ownerMedication.id } }), 3)
     } finally {
       session.userId = ''
       await prisma.user.delete({ where: { id: owner.id } })
@@ -225,7 +271,7 @@ describe('medication stock database concurrency acceptance', { skip: !enabled },
 
   it('diagnoses only the owner’s mismatch and records an audited reconciliation adjustment', async () => {
     const suffix = `${Date.now()}-${Math.random()}`
-    const owner = await prisma.user.create({ data: { email: `stock-reconcile-owner-${suffix}@example.test` } })
+    const owner = await prisma.user.create({ data: { email: `stock-audit-marker-${suffix}@example.test` } })
     const otherUser = await prisma.user.create({ data: { email: `stock-reconcile-other-${suffix}@example.test` } })
     const ownerMedication = await prisma.medication.create({ data: { userId: owner.id, name: 'Owner reconciliation medication' } })
     const otherMedication = await prisma.medication.create({ data: { userId: otherUser.id, name: 'Other reconciliation medication' } })
@@ -244,7 +290,7 @@ describe('medication stock database concurrency acceptance', { skip: !enabled },
       const { GET, POST } = await import('../app/api/stock-levels/route.ts')
       const diagnosticResponse = await GET()
       assert.equal(diagnosticResponse.status, 200)
-      const diagnostics = await diagnosticResponse.json()
+      const diagnostics = await response.json()
       assert.equal(diagnostics.length, 1)
       assert.equal(diagnostics[0].medicationId, ownerMedication.id)
       assert.equal(diagnostics[0].ledgerQuantity, 9)
@@ -270,23 +316,40 @@ describe('medication stock database concurrency acceptance', { skip: !enabled },
       assert.equal(reconciliation.transaction.balanceAfter, 9)
       assert.match(reconciliation.transaction.notes, /Historical stock reconciliation/)
 
+      const { POST: recordStockTransaction } = await import('../app/api/stock-transactions/route.ts')
+      const movementResponse = await recordStockTransaction(json({
+        medicationId: ownerMedication.id,
+        type: 'consume',
+        quantityChange: -2,
+        notes: 'Post-reconciliation stock movement',
+      }))
+      assert.equal(movementResponse.status, 200)
+      const movement = await movementResponse.json()
+      assert.equal(movement.quantityChange, -2)
+      assert.equal(movement.balanceAfter, 7)
+
       const settledDiagnosticResponse = await GET()
       assert.equal(settledDiagnosticResponse.status, 200)
       const settledDiagnostics = await settledDiagnosticResponse.json()
-      assert.equal(settledDiagnostics[0].currentQuantity, 9)
-      assert.equal(settledDiagnostics[0].ledgerQuantity, 9)
+      assert.equal(settledDiagnostics[0].currentQuantity, 7)
+      assert.equal(settledDiagnostics[0].ledgerQuantity, 7)
       assert.equal(settledDiagnostics[0].mismatchQuantity, 0)
       assert.equal(settledDiagnostics[0].hasMismatch, false)
-      assert.equal(settledDiagnostics[0].lastLedgerBalance, 9)
+      assert.equal(settledDiagnostics[0].lastLedgerBalance, 7)
       await assertLedgerMatchesStock(owner.id, ownerMedication.id, 0)
 
       const entries = await prisma.stockTransaction.findMany({
         where: { userId: owner.id, medicationId: ownerMedication.id },
         orderBy: { createdAt: 'asc' },
       })
-      assert.equal(entries.length, 3)
-      assert.equal(entries.at(-1)?.type, 'adjustment')
-      assert.equal(entries.at(-1)?.quantityChange, 1)
+      assert.equal(entries.length, 4)
+      const reconciliationEntry = entries.find(entry => entry.notes?.startsWith('Historical stock reconciliation:'))
+      assert.ok(reconciliationEntry)
+      assert.equal(reconciliationEntry.type, 'adjustment')
+      assert.equal(reconciliationEntry.quantityChange, 1)
+      assert.equal(reconciliationEntry.balanceAfter, 9)
+      assert.equal(entries.at(-1)?.type, 'consume')
+      assert.equal(entries.at(-1)?.quantityChange, -2)
 
       session.userId = otherUser.id
       const forbiddenResponse = await POST(json({
@@ -296,7 +359,7 @@ describe('medication stock database concurrency acceptance', { skip: !enabled },
         expectedLedgerQuantity: 9,
       }))
       assert.equal(forbiddenResponse.status, 404)
-      assert.equal(await prisma.stockTransaction.count({ where: { userId: owner.id, medicationId: ownerMedication.id } }), 3)
+      assert.equal(await prisma.stockTransaction.count({ where: { userId: owner.id, medicationId: ownerMedication.id } }), 4)
 
       session.userId = owner.id
       const staleResponse = await POST(json({
@@ -306,11 +369,52 @@ describe('medication stock database concurrency acceptance', { skip: !enabled },
         expectedLedgerQuantity: 9,
       }))
       assert.equal(staleResponse.status, 409)
-      assert.equal(await prisma.stockTransaction.count({ where: { userId: owner.id, medicationId: ownerMedication.id } }), 3)
+      assert.equal(await prisma.stockTransaction.count({ where: { userId: owner.id, medicationId: ownerMedication.id } }), 4)
     } finally {
       session.userId = ''
       await prisma.user.delete({ where: { id: owner.id } })
       await prisma.user.delete({ where: { id: otherUser.id } })
+    }
+  })
+
+  it('records a reviewed resolution when a legacy cumulative ledger balance is negative', async () => {
+    const suffix = `${Date.now()}-${Math.random()}`
+    const owner = await prisma.user.create({ data: { email: `stock-audit-marker-${suffix}@example.test` } })
+    const medication = await prisma.medication.create({ data: { userId: owner.id, name: 'Audit marker medication' } })
+
+      const { GET } = await import('../app/api/stock-levels/route.ts')
+    const stock = await prisma.stockLevel.create({ data: { userId: owner.id, medicationId: medication.id, currentQuantity: 0 } })
+    const mismatch = await prisma.stockTransaction.create({
+      data: {
+        userId: owner.id,
+        medicationId: medication.id,
+        type: 'consume',
+        quantityChange: -1,
+        balanceAfter: 4,
+      },
+    })
+    session.userId = owner.id
+
+    try {
+      const { POST } = await import('../app/api/stock-levels/route.ts')
+      const response = await GET()
+      assert.equal(response.status, 200)
+      const result = await response.json()
+      assert.equal(result.resolution.userId, owner.id)
+      assert.equal(result.resolution.quantityChange, 0)
+      assert.equal(result.resolution.balanceAfter, 0)
+      assert.equal(result.diagnostic.ledgerQuantity, -1)
+      assert.equal(result.diagnostic.historicalBalanceMismatchCount, 0)
+      assert.equal(result.diagnostic.historicalMismatches[0].resolution.afterLedgerBalance, -1)
+
+      const preserved = await prisma.stockTransaction.findUniqueOrThrow({ where: { id: mismatch.id } })
+      assert.equal(diagnostics[0].ledgerQuantity, 4)
+      assert.equal(diagnostics[0].lastLedgerBalance, 4)
+      assert.equal(diagnostics[0].transactionCount, 2)
+      assert.equal(diagnostics[0].hasMismatch, false)
+    } finally {
+      session.userId = ''
+      await prisma.user.delete({ where: { id: owner.id } })
     }
   })
 })
