@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 verifier="$script_dir/verify-google-auth-staging-evidence.sh"
+writer="$script_dir/write-google-auth-staging-evidence.sh"
 test_dir="$(mktemp -d "${TMPDIR:-/tmp}/syntropic-google-auth-release-evidence.XXXXXX")"
 release_dir="$test_dir/evidence/release-20260909-commit"
 record_file="$release_dir/google-auth-staging-release-record.json"
@@ -43,17 +44,13 @@ passed_attempt='google-auth-staging-evidence-attempt-2026-09-09T00-01-00-000Z-ca
 write_clean_attempt "$failed_attempt" false true
 write_clean_attempt "$passed_attempt" true true
 
-cat >"$record_file" <<EOF
-{
-  "schemaVersion": 1,
-  "acceptedAttemptPath": "$release_dir/$passed_attempt",
-  "attempts": [
-    { "path": "$release_dir/$failed_attempt", "status": "failed" },
-    { "path": "$release_dir/$passed_attempt", "status": "passed" }
-  ]
-}
-EOF
-chmod 600 "$record_file"
+writer_log="$test_dir/writer.log"
+RELEASE_EVIDENCE_DIR="$test_dir/evidence" RELEASE_ID='release-20260909-commit' \
+  AUTH_REGRESSION_RELEASE_RECORD_FILE="$record_file" \
+  bash "$writer" "$release_dir/$passed_attempt" >"$writer_log"
+grep -Fq "accepted=$release_dir/$passed_attempt" "$writer_log"
+grep -Fq "passed=1" "$writer_log"
+grep -Fq "failed=1" "$writer_log"
 
 pass_log="$test_dir/pass.log"
 RELEASE_EVIDENCE_DIR="$test_dir/evidence" RELEASE_ID='release-20260909-commit' \
@@ -81,6 +78,33 @@ assert_rejected() {
     cat "$log" >&2
     exit 1
   fi
+  grep -Eq '^google auth staging release evidence: FAIL \(record=.*errors=[0-9]+, passed=[0-9]+, failed=[0-9]+, unknown=[0-9]+\)$' "$log" ||
+    {
+      printf '%s did not produce safe aggregate failure output\n' "$label" >&2
+      cat "$log" >&2
+      exit 1
+    }
+}
+
+assert_writer_rejected() {
+  local label="$1"
+  local accepted_path="$2"
+  local log="$test_dir/$label-writer.log"
+  local status=0
+  RELEASE_EVIDENCE_DIR="$test_dir/evidence" RELEASE_ID='release-20260909-commit' \
+    AUTH_REGRESSION_RELEASE_RECORD_FILE="$record_file" \
+    bash "$writer" "$accepted_path" >"$log" 2>&1 || status=$?
+  [[ "$status" -ne 0 ]] || {
+    printf '%s writer unexpectedly passed\n' "$label" >&2
+    cat "$log" >&2
+    exit 1
+  }
+  if grep -Fq "$secret_url" "$log" || grep -Fq "$secret_account" "$log" ||
+    grep -Fq "$secret_browser" "$log"; then
+    printf '%s writer exposed private fixture data\n' "$label" >&2
+    cat "$log" >&2
+    exit 1
+  fi
 }
 
 update_record() {
@@ -100,7 +124,29 @@ fs.chmodSync(recordPath, 0o600)
 NODE
 }
 
+refresh_record() {
+  RELEASE_EVIDENCE_DIR="$test_dir/evidence" RELEASE_ID='release-20260909-commit' \
+    AUTH_REGRESSION_RELEASE_RECORD_FILE="$record_file" \
+    bash "$writer" "$1" >/dev/null
+}
+
 accepted_original="$release_dir/$passed_attempt"
+chmod 644 "$accepted_original"
+assert_rejected "mode-change"
+chmod 600 "$accepted_original"
+
+FILE="$accepted_original" node <<'NODE'
+const fs = require('node:fs')
+const filePath = process.env.FILE
+const evidence = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+evidence.checkedAt = '2026-09-09T00:00:01.000Z'
+fs.writeFileSync(filePath, `${JSON.stringify(evidence)}\n`)
+fs.chmodSync(filePath, 0o600)
+NODE
+assert_rejected "content-change"
+write_clean_attempt "$passed_attempt" true true
+
+assert_writer_rejected "failed-accepted" "$release_dir/$failed_attempt"
 SECRET_URL="$secret_url" SECRET_ACCOUNT="$secret_account" SECRET_BROWSER="$secret_browser" \
   FILE="$release_dir/$failed_attempt" node <<'NODE'
 const fs = require('node:fs')
@@ -116,10 +162,39 @@ fs.chmodSync(filePath, 0o600)
 NODE
 assert_rejected "unsafe-evidence"
 write_clean_attempt "$failed_attempt" false true
+refresh_record "$accepted_original"
+
+cp "$accepted_original" "$release_dir/$failed_attempt"
+RECORD="$record_file" FAILED="$release_dir/$failed_attempt" node <<'NODE'
+const crypto = require('node:crypto')
+const fs = require('node:fs')
+const recordPath = process.env.RECORD
+const failedPath = process.env.FAILED
+const record = JSON.parse(fs.readFileSync(recordPath, 'utf8'))
+const digest = crypto.createHash('sha256').update(fs.readFileSync(failedPath)).digest('hex')
+record.attempts[0].sha256 = digest
+fs.writeFileSync(recordPath, `${JSON.stringify(record, null, 2)}\n`)
+fs.chmodSync(recordPath, 0o600)
+NODE
+assert_rejected "duplicate-content"
+write_clean_attempt "$failed_attempt" false true
+refresh_record "$accepted_original"
+
+RECORD="$record_file" node <<'NODE'
+const fs = require('node:fs')
+const recordPath = process.env.RECORD
+const record = JSON.parse(fs.readFileSync(recordPath, 'utf8'))
+record.acceptedAttemptSha256 = '0'.repeat(64)
+fs.writeFileSync(recordPath, `${JSON.stringify(record, null, 2)}\n`)
+fs.chmodSync(recordPath, 0o600)
+NODE
+assert_rejected "approved-metadata-mismatch"
+refresh_record "$accepted_original"
 
 outside_attempt="$test_dir/google-auth-staging-evidence-attempt-2026-09-09T00-02-00-000Z-feedface-feed-face-feed-facefeedface.json"
 cp "$accepted_original" "$outside_attempt"
 chmod 600 "$outside_attempt"
+assert_writer_rejected "out-of-directory-accepted" "$outside_attempt"
 update_record "$outside_attempt" "$accepted_original" "$outside_attempt"
 assert_rejected "out-of-directory-accepted"
 
@@ -140,6 +215,7 @@ assert_rejected "failed-accepted"
 
 update_record "$accepted_original"
 rm "$release_dir/$failed_attempt" "$release_dir/$passed_attempt"
+assert_writer_rejected "missing-attempt" "$accepted_original"
 assert_rejected "missing-attempt"
 
 printf 'Google staging release evidence privacy and acceptance regression: PASS\n'
