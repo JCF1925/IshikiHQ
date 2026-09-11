@@ -37,6 +37,29 @@ async function ownedImport(id: string, userId: string, options?: { liveOnly?: bo
   })
 }
 
+function removedImportLifecycle(record: {
+  id: string
+  kind: string
+  status: string
+  confirmedAt: Date | null
+  canceledAt: Date | null
+  deletedAt: Date | null
+  createdAt: Date
+  updatedAt: Date
+}) {
+  return {
+    id: record.id,
+    kind: record.kind,
+    status: record.status,
+    confirmedAt: record.confirmedAt,
+    canceledAt: record.canceledAt,
+    deletedAt: record.deletedAt,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    removalReason: record.status === 'canceled' ? 'review_canceled' : 'source_removed',
+  }
+}
+
 function changedFields(before: Record<string, unknown>, after: Record<string, unknown>) {
   return Array.from(new Set([...Object.keys(before), ...Object.keys(after)]))
     .filter((field) => JSON.stringify(before[field]) !== JSON.stringify(after[field]))
@@ -59,6 +82,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   if (!userId) return apiError('UNAUTHORIZED', 'Authentication required', 401)
   const record = await ownedImport(id, userId)
   if (!record) return apiError('NOT_FOUND', 'Import not found', 404)
+  if (record.deletedAt) return apiSuccess(removedImportLifecycle(record))
   return apiSuccess(record)
 }
 
@@ -85,6 +109,18 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const known = new Map(current.rows.map((row) => [row.id, row]))
     for (const change of body.rows) {
       if (!known.has(String(change?.id))) return apiError('NOT_FOUND', 'Import row not found', 404)
+    }
+    if (current.kind === 'medicare') {
+      const appointmentIds = body.rows
+        .map((change: any) => change?.data?.appointmentId)
+        .filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0)
+      const ownedAppointments = await prisma.appointment.findMany({
+        where: { userId, id: { in: appointmentIds } },
+        select: { id: true },
+      })
+      if (ownedAppointments.length !== new Set(appointmentIds).size) {
+        return apiError('NOT_FOUND', 'Appointment does not belong to this account', 404)
+      }
     }
     await prisma.$transaction(async (tx) => {
       for (const change of body.rows) {
@@ -172,6 +208,20 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     if (!policy) return apiError('NOT_FOUND', 'Private health policy not found', 404)
   }
 
+  if (current.kind === 'medicare') {
+    const appointmentIds = current.rows
+      .filter((row) => row.status === 'valid')
+      .map((row) => (row.data as Record<string, unknown>).appointmentId)
+      .filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0)
+    const ownedAppointments = await prisma.appointment.findMany({
+      where: { userId, id: { in: appointmentIds } },
+      select: { id: true },
+    })
+    if (ownedAppointments.length !== new Set(appointmentIds).size) {
+      return apiError('NOT_FOUND', 'Appointment does not belong to this account', 404)
+    }
+  }
+
   const confirmed = await prisma.$transaction(async (tx) => {
     const claimed = await tx.healthClaimImport.updateMany({ where: { id, userId, status: 'review' }, data: { status: 'confirmed', confirmedAt: new Date() } })
     if (claimed.count !== 1) return false
@@ -192,6 +242,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
             financialYear: data.financialYear || null,
             isForecast: Boolean(data.isForecast),
             countsToSafetyNet: data.countsToSafetyNet !== false,
+            appointmentId: data.appointmentId || null,
             sourceImportId: id,
             sourceRowId: row.id,
             importFingerprint: row.fingerprint,
