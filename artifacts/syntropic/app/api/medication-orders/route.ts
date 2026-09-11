@@ -22,16 +22,16 @@ export async function POST(request: Request) {
   if (!parsedRequest.success) return NextResponse.json(validationError(parsedRequest.error), { status: 400 })
   if (parsedRequest.data.type === 'pharmacy') {
     const parsed = parsedRequest.data
-    const { type: _type, ...pharmacy } = parsed
+    const pharmacy = { name: parsed.name, address: parsed.address, phone: parsed.phone, notes: parsed.notes }
     return NextResponse.json(await prisma.pharmacy.create({ data: { userId, ...pharmacy } }), { status: 201 })
   }
   if (parsedRequest.data.type === 'preference') {
     const parsed = parsedRequest.data
-    const { type: _type, ...preference } = parsed
+    const preference = { medicationId: parsed.medicationId, pharmacyId: parsed.pharmacyId }
     const ok = await prisma.$transaction(async tx => {
       const [med, pharmacy] = await Promise.all([
         tx.medication.findFirst({ where: { id: preference.medicationId, userId } }),
-        tx.pharmacy.findFirst({ where: { id: preference.pharmacyId, userId } }),
+        tx.pharmacy.findFirst({ where: { id: preference.pharmacyId, userId, isActive: true } }),
       ])
       if (!med || !pharmacy) throw new Error('NOT_FOUND')
       return tx.medicationPharmacyPreference.upsert({ where: { userId_medicationId: { userId, medicationId: preference.medicationId } }, create: { userId, ...preference }, update: { pharmacyId: preference.pharmacyId } })
@@ -44,7 +44,7 @@ export async function POST(request: Request) {
   const periodStart = fortnightStart(parsed.periodStart)
   const data = { ...parsed, periodStart, periodEnd: new Date(periodStart.getTime() + 13 * 86400000) }
   const result = await prisma.$transaction(async tx => {
-    const pharmacy = await tx.pharmacy.findFirst({ where: { id: data.pharmacyId, userId } }); if (!pharmacy) throw new Error('NOT_FOUND')
+    const pharmacy = await tx.pharmacy.findFirst({ where: { id: data.pharmacyId, userId, isActive: true } }); if (!pharmacy) throw new Error('NOT_FOUND')
     const existing = await tx.pharmacyOrder.findUnique({ where: { userId_pharmacyId_periodStart: { userId, pharmacyId: data.pharmacyId, periodStart: data.periodStart } }, select: { id: true, status: true } })
     if (existing && existing.status !== 'draft') throw new Error('ORDER_LOCKED')
     if (data.lines.length) {
