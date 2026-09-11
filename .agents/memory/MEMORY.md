@@ -33,15 +33,23 @@
 - [Prisma managed timestamps in raw SQL](prisma-managed-timestamps-raw-sql.md) — raw inserts must supply required @updatedAt values because Prisma, not PostgreSQL, manages them.
 - [Release lint boundaries](release-lint-boundaries.md) — keep generated Playwright and platform-managed files out of app lint; SSR lint rejects inline suppressions.
 - [Release evidence privacy tests](release-evidence-privacy-tests.md) — keep sensitive fixture labels out of wrapper-generated paths when asserting redacted evidence.
+- [Release evidence integrity](release-evidence-integrity.md) — bind each retained sign-in attempt to exact bytes and reject duplicates before approval.
 - [Database target identity](database-target-identity.md) — match acceptance labels to database-level metadata, never an operator or session setting.
+- [Database acceptance target identity](database-acceptance-target.md) — disposable acceptance requires a database-level target marker, not only an environment variable.
 - [Auth browser fixtures](auth-browser-fixtures.md) — stub protected callback destinations when browser tests mock Auth.js sessions.
 - [Mobile capture recovery privacy](mobile-capture-recovery-privacy.md) — retain deleted payloads only in the owner-scoped record; tombstone sync changes must stay empty until explicit restore.
 - [Migration acceptance shell](migration-acceptance-shell.md) — use pnpm-resolved Prisma binaries and shell-expand generated IDs outside dollar-quoted psql blocks.
 - [Node test module mocks](node-test-module-mocks.md) — invoke Node’s experimental module-mock flag directly; Node 24 rejects it through NODE_OPTIONS.
 - [Node test mocking under tsx](node-test-mock-module.md) — the isolated API suite may fail before collection when the active loader lacks node:test module mocking.
 - [Task priority reconciliation](task-priority-reconciliation.md) — large task-service reads truncate or rate-limit; reconcile with small exact-reference batches and verify dependency closure.
-- [Browser acceptance database](browser-acceptance-database.md) — run authenticated browser CRUD checks against a disposable fully migrated schema when shared development lags migrations.
+- [Browser acceptance database](browser-acceptance-database.md) — run authenticated browser CRUD checks against a disposable fully migrated schema when shared development lags.
+- [Credential revocation lock ordering](credential-revocation-lock-ordering.md) — refresh and revocation must lock the connection row before touching shared OAuth credentials.
 - [Calendar identity migration](calendar-identity-migration.md) — test both fresh installs and upgrade paths when tightening nullable provider identity rules.
 - [Calendar evidence timestamps](calendar-evidence-timestamps.md) — accept canonical UTC evidence timestamps with or without milliseconds across wrapper paths.
 - [Controlled Google OAuth fixture](google-oauth-fixture.md) — use a test-only generic OAuth provider with the Google id when live OpenID tokens are unavailable.
 - [React Query workspace context](react-query-workspace-context.md) — pnpm peer variants can split Query context; export providers with generated hooks.
+- [GitHub workflow write scope](github-workflow-write-scope.md) — repository write access alone may reject workflow-path commits with a misleading 404.
+- [Playwright nested route interception](playwright-nested-routes.md) — single-star route globs do not catch deeper follow-up endpoints; mock each nested request depth explicitly.
+- [Mobile API acceptance authentication](mobile-api-acceptance-auth.md) — targeted test filters must preserve the suite's shared device-session login setup.
+- [Authenticated Expo preview checks](expo-authenticated-preview-checks.md) — a healthy managed handoff does not prove protected mobile queue flows without a disposable test account.
+- [Mobile auth invalidation race](mobile-auth-invalidation-race.md) — serialize stale-session cleanup with replacement credentials and recheck the session generation before signing out.
