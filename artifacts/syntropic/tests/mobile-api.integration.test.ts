@@ -1,11 +1,8 @@
 /* API integration coverage. Run only against an isolated migrated database:
  * MOBILE_API_DATABASE_TESTS=1 pnpm exec tsx --test tests/mobile-api.integration.test.ts */
 import assert from 'node:assert/strict'
-import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import http from 'node:http'
-import net from 'node:net'
-import { fileURLToPath } from 'node:url'
 import { after, before, describe, it, mock } from 'node:test'
 import bcrypt from 'bcryptjs'
 import { prisma } from '../lib/db.ts'
@@ -35,7 +32,6 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
   let accessToken = ''
   let userId = ''
 
-  let realApiProcess: ChildProcess | undefined
   const request = async (path: string, init: RequestInit = {}) => {
     return requestAs(accessToken, path, init)
   }
@@ -63,15 +59,6 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
     body: JSON.stringify({ changes }),
   })
 
-  const availablePort = async () => {
-    const probe = net.createServer()
-    await new Promise<void>((resolve, reject) => probe.listen(0, '127.0.0.1', () => resolve()))
-    const address = probe.address()
-    assert.ok(address && typeof address !== 'string')
-    const port = address.port
-    await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()))
-    return port
-  }
   const login = async (email: string, password: string, installId: string, deviceName: string) => {
     const response = await requestAs('', '/api/mobile/auth/device-sessions', {
       method: 'POST',
@@ -114,7 +101,6 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
   })
 
   after(async () => {
-    if (realApiProcess) await stopProcess(realApiProcess)
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
     await database.pool.end()
   })
@@ -140,13 +126,15 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
   it('shows the owner stock diagnostic and refreshes visible stock after reconciliation', async () => {
     const medicationId = `mobile-sync-medication-${randomUUID()}`
     const stockLevelId = `mobile-sync-stock-${randomUUID()}`
+
+    const replenishmentTransactionId = `mobile-retry-replenishment-${randomUUID()}`
     const initialTransactionId = `mobile-stock-transaction-${randomUUID()}`
     const consumeTransactionId = `mobile-stock-transaction-${randomUUID()}`
     const suffix = randomUUID()
     const otherUserId = `mobile-offline-other-${suffix}`
     await database.pool.query(
       `INSERT INTO "Medication" ("id", "userId", "name", "form", "medType", "isSchedule8", "isOtc", "isActive", "createdAt", "updatedAt")
-       VALUES ($1, $2, 'Mobile stock acceptance medication', 'tablet', 'scheduled', false, true, true, NOW(), NOW())`,
+       VALUES ($1, $2, 'Mobile stock acceptance medication', 'tablet', 'prn', false, true, true, NOW(), NOW())`,
       [medicationId, userId],
     )
     await database.pool.query(
@@ -226,6 +214,61 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
         },
       )
 
+      const movement = await request('/api/mobile/medication-doses', {
+        method: 'POST',
+        headers: { 'idempotency-key': `post-reconciliation-dose-${suffix}` },
+        body: JSON.stringify({
+          clientId: `post-reconciliation-dose-${suffix}`,
+          medicationId,
+          takenAt: '2026-09-08T00:00:02.000Z',
+          status: 'taken',
+          dose: '2',
+        }),
+      })
+      assert.equal(movement.status, 201)
+
+      const movedResponse = await request('/api/mobile/stock-levels')
+      assert.equal(movedResponse.status, 200)
+      const movedLevels = await json<Array<{
+        currentQuantity: number;
+        ledgerQuantity: number;
+        lastLedgerBalance: number | null;
+        transactionCount: number;
+        mismatchQuantity: number;
+        hasMismatch: boolean;
+      }>>(movedResponse)
+      assert.deepEqual(
+        {
+          currentQuantity: movedLevels[0]?.currentQuantity,
+          ledgerQuantity: movedLevels[0]?.ledgerQuantity,
+          lastLedgerBalance: movedLevels[0]?.lastLedgerBalance,
+          transactionCount: movedLevels[0]?.transactionCount,
+          mismatchQuantity: movedLevels[0]?.mismatchQuantity,
+          hasMismatch: movedLevels[0]?.hasMismatch,
+        },
+        {
+          currentQuantity: 7,
+          ledgerQuantity: 7,
+          lastLedgerBalance: 7,
+          transactionCount: 4,
+          mismatchQuantity: 0,
+          hasMismatch: false,
+        },
+      )
+
+      const auditEntry = await database.pool.query(
+        `SELECT "quantityChange", "balanceAfter", "notes"
+         FROM "StockTransaction"
+         WHERE "userId" = $1 AND "medicationId" = $2
+           AND "notes" LIKE 'Historical stock reconciliation:%'`,
+        [userId, medicationId],
+      )
+      assert.deepEqual(auditEntry.rows, [{
+        quantityChange: 1,
+        balanceAfter: 9,
+        notes: 'Historical stock reconciliation: current stock 8 aligned to ledger balance 9.',
+      }])
+
       const settledResponse = await request('/api/mobile/stock-levels')
       const settledLevels = await json<Array<{
         currentQuantity: number;
@@ -241,8 +284,8 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
           hasMismatch: settledLevels[0]?.hasMismatch,
         },
         {
-          currentQuantity: 9,
-          ledgerQuantity: 9,
+          currentQuantity: 7,
+          ledgerQuantity: 7,
           mismatchQuantity: 0,
           hasMismatch: false,
         },
@@ -264,7 +307,7 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
       const afterLevels = await json<Array<{ id: string; currentQuantity: number }>>(after)
       assert.equal(afterLevels.length, 1)
       assert.equal(afterLevels[0]?.id, stockLevelId)
-      assert.equal(afterLevels[0]?.currentQuantity, 9)
+      assert.equal(afterLevels[0]?.currentQuantity, 7)
 
       const forbidden = await database.pool.query(
         `SELECT COUNT(*)::int AS "count" FROM "StockTransaction" WHERE "userId" = $1`,
@@ -283,13 +326,13 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
     const suffix = randomUUID()
     const otherUserId = `mobile-offline-other-${suffix}`
     const otherEmail = `${otherUserId}@example.test`
-    const otherPassword = 'other-stock-acceptance-password'
-    const ownerMedicationId = `mobile-stock-owner-medication-${suffix}`
-    const ownerStockLevelId = `mobile-stock-owner-level-${suffix}`
-    const ownerTransactionId = `mobile-stock-owner-transaction-${suffix}`
+    const otherPassword = 'revoked-stock-other-password'
+    const ownerMedicationId = `mobile-revoked-stock-owner-medication-${suffix}`
+    const ownerStockLevelId = `mobile-revoked-stock-owner-level-${suffix}`
+    const ownerTransactionId = `mobile-revoked-stock-owner-transaction-${suffix}`
     const otherMedicationId = `mobile-offline-other-medication-${suffix}`
-    const otherStockLevelId = `mobile-stock-other-level-${suffix}`
-    const otherTransactionId = `mobile-stock-other-transaction-${suffix}`
+    const otherStockLevelId = `mobile-revoked-stock-other-level-${suffix}`
+    const otherTransactionId = `mobile-revoked-stock-other-transaction-${suffix}`
 
     await database.pool.query(
       `INSERT INTO "User" ("id", "email", "passwordHash", "updatedAt") VALUES ($1, $2, $3, NOW())`,
@@ -297,8 +340,8 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
     )
     await database.pool.query(
       `INSERT INTO "Medication" ("id", "userId", "name", "form", "medType", "isSchedule8", "isOtc", "isActive", "createdAt", "updatedAt")
-       VALUES ($1, $2, 'Owner one private medication', 'tablet', 'scheduled', false, true, true, NOW(), NOW()),
-              ($3, $4, 'Owner two private medication', 'capsule', 'scheduled', false, true, true, NOW(), NOW())`,
+       VALUES ($1, $2, 'Concurrent owner one medication', 'tablet', 'scheduled', false, true, true, NOW(), NOW()),
+              ($3, $4, 'Concurrent owner two medication', 'capsule', 'scheduled', false, true, true, NOW(), NOW())`,
       [ownerMedicationId, userId, otherMedicationId, otherUserId],
     )
     await database.pool.query(
@@ -318,14 +361,14 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
       const ownerSession = await login(
         `${userId}@example.test`,
         'offline-recovery-password',
-        `ios-stock-owner-${suffix}`,
-        'Stock owner one',
+        `ios-stock-concurrent-owner-${suffix}`,
+        'Concurrent stock owner one',
       )
       const otherSession = await login(
         otherEmail,
         otherPassword,
-        `ios-stock-other-${suffix}`,
-        'Stock owner two',
+        `ios-revoked-stock-other-${suffix}`,
+        'Other stock device',
       )
 
       const ownerDiagnostic = await requestAs(ownerSession.accessToken, '/api/mobile/stock-levels')
@@ -428,6 +471,300 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
     }
   })
 
+  it('keeps concurrent stock diagnostics and cross-owner corrections private', async () => {
+    const suffix = randomUUID()
+    const otherUserId = `mobile-offline-other-${suffix}`
+    const otherEmail = `${otherUserId}@example.test`
+    const otherPassword = 'revoked-stock-other-password'
+    const ownerMedicationId = `mobile-revoked-stock-owner-medication-${suffix}`
+    const ownerStockLevelId = `mobile-revoked-stock-owner-level-${suffix}`
+    const ownerTransactionId = `mobile-revoked-stock-owner-transaction-${suffix}`
+    const otherMedicationId = `mobile-offline-other-medication-${suffix}`
+    const otherStockLevelId = `mobile-revoked-stock-other-level-${suffix}`
+    const otherTransactionId = `mobile-revoked-stock-other-transaction-${suffix}`
+
+    await database.pool.query(
+      `INSERT INTO "User" ("id", "email", "passwordHash", "updatedAt") VALUES ($1, $2, $3, NOW())`,
+      [otherUserId, otherEmail, await bcrypt.hash(otherPassword, 4)],
+    )
+    await database.pool.query(
+      `INSERT INTO "Medication" ("id", "userId", "name", "form", "medType", "isSchedule8", "isOtc", "isActive", "createdAt", "updatedAt")
+       VALUES ($1, $2, 'Concurrent owner one medication', 'tablet', 'scheduled', false, true, true, NOW(), NOW()),
+              ($3, $4, 'Concurrent owner two medication', 'capsule', 'scheduled', false, true, true, NOW(), NOW())`,
+      [ownerMedicationId, userId, otherMedicationId, otherUserId],
+    )
+    await database.pool.query(
+      `INSERT INTO "StockLevel" ("id", "userId", "medicationId", "currentQuantity", "reorderThreshold", "updatedAt")
+       VALUES ($1, $2, $3, 8, 5, NOW()),
+              ($4, $5, $6, 3, 2, NOW())`,
+      [ownerStockLevelId, userId, ownerMedicationId, otherStockLevelId, otherUserId, otherMedicationId],
+    )
+    await database.pool.query(
+      `INSERT INTO "StockTransaction" ("id", "userId", "medicationId", "date", "type", "quantityChange", "balanceAfter", "createdAt")
+       VALUES ($1, $2, $3, '2026-09-08T00:00:00.000Z', 'stocktake', 9, 9, '2026-09-08T00:00:00.000Z'),
+              ($4, $5, $6, '2026-09-08T00:00:01.000Z', 'stocktake', 4, 4, '2026-09-08T00:00:01.000Z')`,
+      [ownerTransactionId, userId, ownerMedicationId, otherTransactionId, otherUserId, otherMedicationId],
+    )
+
+    try {
+      const ownerSession = await login(
+        `${userId}@example.test`,
+        'offline-recovery-password',
+        `ios-stock-concurrent-owner-${suffix}`,
+        'Concurrent stock owner one',
+      )
+      const otherSession = await login(
+        otherEmail,
+        otherPassword,
+        `ios-revoked-stock-other-${suffix}`,
+        'Other stock device',
+      )
+
+      const [ownerDiagnostic, otherDiagnostic, otherCorrectsOwner, ownerCorrectsOther] = await Promise.all([
+        requestAs(ownerSession.accessToken, '/api/mobile/stock-levels'),
+        requestAs(otherSession.accessToken, '/api/mobile/stock-levels'),
+        requestAs(otherSession.accessToken, '/api/mobile/stock-levels', {
+          method: 'POST',
+          body: JSON.stringify({
+            action: 'reconcile',
+            id: ownerStockLevelId,
+            expectedCurrentQuantity: 8,
+            expectedLedgerQuantity: 9,
+          }),
+        }),
+        requestAs(ownerSession.accessToken, '/api/mobile/stock-levels', {
+          method: 'POST',
+          body: JSON.stringify({
+            action: 'reconcile',
+            id: otherStockLevelId,
+            expectedCurrentQuantity: 3,
+            expectedLedgerQuantity: 4,
+          }),
+        }),
+      ])
+
+      assert.equal(ownerDiagnostic.status, 200)
+      assert.deepEqual(await json<Array<Record<string, unknown>>>(ownerDiagnostic), [{
+        id: ownerStockLevelId,
+        medicationId: ownerMedicationId,
+        medicationLabel: 'Concurrent owner one medication',
+        currentQuantity: 8,
+        reorderThreshold: 5,
+        monthlyLimit: null,
+        ledgerQuantity: 9,
+        lastLedgerBalance: 9,
+        transactionCount: 1,
+        mismatchQuantity: 1,
+        hasMismatch: true,
+      }])
+
+      assert.equal(otherDiagnostic.status, 200)
+      assert.deepEqual(await json<Array<Record<string, unknown>>>(otherDiagnostic), [{
+        id: otherStockLevelId,
+        medicationId: otherMedicationId,
+        medicationLabel: 'Concurrent owner two medication',
+        currentQuantity: 3,
+        reorderThreshold: 2,
+        monthlyLimit: null,
+        ledgerQuantity: 4,
+        lastLedgerBalance: 4,
+        transactionCount: 1,
+        mismatchQuantity: 1,
+        hasMismatch: true,
+      }])
+
+      assert.equal(otherCorrectsOwner.status, 404)
+      assert.equal((await json<{ error: { code: string } }>(otherCorrectsOwner)).error.code, 'not_found')
+      assert.equal(ownerCorrectsOther.status, 404)
+      assert.equal((await json<{ error: { code: string } }>(ownerCorrectsOther)).error.code, 'not_found')
+
+      const [stockAfter, ledgerAfter] = await Promise.all([
+        database.pool.query(
+          `SELECT "userId", "id", "currentQuantity" FROM "StockLevel"
+           WHERE "id" IN ($1, $2) ORDER BY "id"`,
+          [ownerStockLevelId, otherStockLevelId],
+        ),
+        database.pool.query(
+          `SELECT "userId", "medicationId", "quantityChange", "balanceAfter"
+           FROM "StockTransaction" WHERE "id" IN ($1, $2) ORDER BY "id"`,
+          [ownerTransactionId, otherTransactionId],
+        ),
+      ])
+      assert.deepEqual(stockAfter.rows, [
+        { userId: otherUserId, id: otherStockLevelId, currentQuantity: 3 },
+        { userId: userId, id: ownerStockLevelId, currentQuantity: 8 },
+      ])
+      assert.deepEqual(ledgerAfter.rows, [
+        { userId: otherUserId, medicationId: otherMedicationId, quantityChange: 4, balanceAfter: 4 },
+        { userId, medicationId: ownerMedicationId, quantityChange: 9, balanceAfter: 9 },
+      ])
+    } finally {
+      await database.pool.query(`DELETE FROM "StockTransaction" WHERE "id" IN ($1, $2)`, [
+        ownerTransactionId,
+        otherTransactionId,
+      ])
+      await database.pool.query(`DELETE FROM "StockLevel" WHERE "id" IN ($1, $2)`, [
+        ownerStockLevelId,
+        otherStockLevelId,
+      ])
+      await database.pool.query(`DELETE FROM "Medication" WHERE "id" IN ($1, $2)`, [
+        ownerMedicationId,
+        otherMedicationId,
+      ])
+      await database.pool.query(`DELETE FROM "User" WHERE "id" = $1`, [otherUserId])
+    }
+  })
+
+  it('rejects revoked device sessions from reopening stock diagnostics or corrections', async () => {
+    const suffix = randomUUID()
+    const otherUserId = `mobile-offline-other-${suffix}`
+    const otherEmail = `${otherUserId}@example.test`
+    const otherPassword = 'revoked-stock-other-password'
+    const ownerMedicationId = `mobile-revoked-stock-owner-medication-${suffix}`
+    const ownerStockLevelId = `mobile-revoked-stock-owner-level-${suffix}`
+    const ownerTransactionId = `mobile-revoked-stock-owner-transaction-${suffix}`
+    const otherMedicationId = `mobile-offline-other-medication-${suffix}`
+    const otherStockLevelId = `mobile-revoked-stock-other-level-${suffix}`
+    const otherTransactionId = `mobile-revoked-stock-other-transaction-${suffix}`
+    const previousAccessToken = accessToken
+
+    await database.pool.query(
+      `INSERT INTO "User" ("id", "email", "passwordHash", "updatedAt") VALUES ($1, $2, $3, NOW())`,
+      [otherUserId, otherEmail, await bcrypt.hash(otherPassword, 4)],
+    )
+    await database.pool.query(
+      `INSERT INTO "Medication" ("id", "userId", "name", "form", "medType", "isSchedule8", "isOtc", "isActive", "createdAt", "updatedAt")
+       VALUES ($1, $2, 'Revoked session owner medication', 'tablet', 'scheduled', false, true, true, NOW(), NOW()),
+              ($3, $4, 'Other owner private medication', 'capsule', 'scheduled', false, true, true, NOW(), NOW())`,
+      [ownerMedicationId, userId, otherMedicationId, otherUserId],
+    )
+    await database.pool.query(
+      `INSERT INTO "StockLevel" ("id", "userId", "medicationId", "currentQuantity", "reorderThreshold", "updatedAt")
+       VALUES ($1, $2, $3, 8, 5, NOW()),
+              ($4, $5, $6, 6, 2, NOW())`,
+      [ownerStockLevelId, userId, ownerMedicationId, otherStockLevelId, otherUserId, otherMedicationId],
+    )
+    await database.pool.query(
+      `INSERT INTO "StockTransaction" ("id", "userId", "medicationId", "date", "type", "quantityChange", "balanceAfter", "createdAt")
+       VALUES ($1, $2, $3, '2026-09-08T00:00:00.000Z', 'stocktake', 9, 9, '2026-09-08T00:00:00.000Z'),
+              ($4, $5, $6, '2026-09-08T00:00:01.000Z', 'stocktake', 7, 7, '2026-09-08T00:00:01.000Z')`,
+      [ownerTransactionId, userId, ownerMedicationId, otherTransactionId, otherUserId, otherMedicationId],
+    )
+
+    try {
+      const revokedSession = await login(
+        `${userId}@example.test`,
+        'offline-recovery-password',
+        `ios-revoked-stock-${suffix}`,
+        'Revoked stock device',
+      )
+      const visibleBeforeRevocation = await requestAs(revokedSession.accessToken, '/api/mobile/stock-levels')
+      assert.equal(visibleBeforeRevocation.status, 200)
+      assert.deepEqual(await json<Array<Record<string, unknown>>>(visibleBeforeRevocation), [{
+        id: ownerStockLevelId,
+        medicationId: ownerMedicationId,
+        medicationLabel: 'Revoked session owner medication',
+        currentQuantity: 8,
+        reorderThreshold: 5,
+        monthlyLimit: null,
+        ledgerQuantity: 9,
+        lastLedgerBalance: 9,
+        transactionCount: 1,
+        mismatchQuantity: 1,
+        hasMismatch: true,
+      }])
+
+      const revoked = await requestAs(revokedSession.accessToken, '/api/mobile/auth/device-sessions', {
+        method: 'DELETE',
+      })
+      assert.equal(revoked.status, 204)
+
+      const revokedDiagnostics = await requestAs(revokedSession.accessToken, '/api/mobile/stock-levels')
+      assert.equal(revokedDiagnostics.status, 401)
+      assert.equal((await json<{ error: { code: string } }>(revokedDiagnostics)).error.code, 'invalid_session')
+
+      const revokedCorrection = await requestAs(revokedSession.accessToken, '/api/mobile/stock-levels', {
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'reconcile',
+          id: ownerStockLevelId,
+          expectedCurrentQuantity: 8,
+          expectedLedgerQuantity: 9,
+        }),
+      })
+      assert.equal(revokedCorrection.status, 401)
+      assert.equal((await json<{ error: { code: string } }>(revokedCorrection)).error.code, 'invalid_session')
+
+      const otherSession = await login(
+        otherEmail,
+        otherPassword,
+        `ios-revoked-stock-other-${suffix}`,
+        'Other stock device',
+      )
+      const otherDiagnostics = await requestAs(otherSession.accessToken, '/api/mobile/stock-levels')
+      assert.equal(otherDiagnostics.status, 200)
+      assert.deepEqual(await json<Array<Record<string, unknown>>>(otherDiagnostics), [{
+        id: otherStockLevelId,
+        medicationId: otherMedicationId,
+        medicationLabel: 'Other owner private medication',
+        currentQuantity: 6,
+        reorderThreshold: 2,
+        monthlyLimit: null,
+        ledgerQuantity: 7,
+        lastLedgerBalance: 7,
+        transactionCount: 1,
+        mismatchQuantity: 1,
+        hasMismatch: true,
+      }])
+
+      const otherCannotCorrectOwner = await requestAs(otherSession.accessToken, '/api/mobile/stock-levels', {
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'reconcile',
+          id: ownerStockLevelId,
+          expectedCurrentQuantity: 8,
+          expectedLedgerQuantity: 9,
+        }),
+      })
+      assert.equal(otherCannotCorrectOwner.status, 404)
+      assert.equal((await json<{ error: { code: string } }>(otherCannotCorrectOwner)).error.code, 'not_found')
+
+      const unchanged = await database.pool.query(
+        `SELECT "userId", "id", "currentQuantity"
+         FROM "StockLevel" WHERE "id" IN ($1, $2) ORDER BY "id"`,
+        [ownerStockLevelId, otherStockLevelId],
+      )
+      assert.deepEqual(unchanged.rows, [
+        { userId: otherUserId, id: otherStockLevelId, currentQuantity: 6 },
+        { userId, id: ownerStockLevelId, currentQuantity: 8 },
+      ])
+      const transactions = await database.pool.query(
+        `SELECT "userId", "id", "quantityChange", "balanceAfter"
+         FROM "StockTransaction" WHERE "id" IN ($1, $2) ORDER BY "id"`,
+        [ownerTransactionId, otherTransactionId],
+      )
+      assert.deepEqual(transactions.rows, [
+        { userId: otherUserId, id: otherTransactionId, quantityChange: 7, balanceAfter: 7 },
+        { userId, id: ownerTransactionId, quantityChange: 9, balanceAfter: 9 },
+      ])
+    } finally {
+      accessToken = previousAccessToken
+      await database.pool.query(`DELETE FROM "StockTransaction" WHERE "id" IN ($1, $2)`, [
+        ownerTransactionId,
+        otherTransactionId,
+      ])
+      await database.pool.query(`DELETE FROM "StockLevel" WHERE "id" IN ($1, $2)`, [
+        ownerStockLevelId,
+        otherStockLevelId,
+      ])
+      await database.pool.query(`DELETE FROM "Medication" WHERE "id" IN ($1, $2)`, [
+        ownerMedicationId,
+        otherMedicationId,
+      ])
+      await database.pool.query(`DELETE FROM "User" WHERE "id" = $1`, [otherUserId])
+    }
+  })
+
   it('rejects upload completion when the bytes do not match the initiated digest', async () => {
     const content = Buffer.from('offline attachment integrity fixture')
     const digest = createHash('sha256').update(content).digest('hex')
@@ -481,6 +818,8 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
     const prescriptionId = `mobile-offline-prescription-${suffix}`
     const scheduleId = `mobile-sync-schedule-${randomUUID()}`
     const stockLevelId = `mobile-sync-stock-${randomUUID()}`
+
+    const replenishmentTransactionId = `mobile-retry-replenishment-${randomUUID()}`
     const prnStockLevelId = `mobile-sync-prn-stock-${randomUUID()}`
     const otherUserId = `mobile-offline-other-${suffix}`
     const changedAt = '2026-09-08T03:00:00.000Z'
@@ -509,10 +848,10 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
       notes: 'Replayed after reconnect',
     }
     const medicationPayload = {
-      clientId: entityIds.medicationDose,
+      clientId: entityId,
       medicationId,
       scheduleId,
-      takenAt: changedAt,
+      takenAt: '2026-09-08T04:00:00.000Z',
       status: 'taken',
       dose: '1',
     }
@@ -650,6 +989,67 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
         ],
       )
 
+      const editedPrnPayload = {
+        clientId: unscheduledEntityId,
+        medicationId: prnMedicationId,
+        takenAt: changedAt,
+        status: 'taken',
+        dose: '0.5',
+        reason: 'Corrected after reviewing the capture',
+      }
+      const editedPrn = await push(`edit-prn-sync-${suffix}`, [{
+        changeId: `edit-prn-${suffix}`,
+        entityType: 'medicationDose',
+        entityId: unscheduledEntityId,
+        operation: 'upsert',
+        baseVersion: 1,
+        changedAt: '2026-09-08T03:05:00.000Z',
+        payload: editedPrnPayload,
+      }])
+      assert.equal(editedPrn.status, 200)
+      assert.deepEqual(
+        (await json<{ results: Array<{ changeId: string; status: string; version: number }> }>(editedPrn)).results,
+        [{ changeId: `edit-prn-${suffix}`, status: 'applied', version: 2 }],
+      )
+      const editedPrnState = await database.pool.query(
+        `SELECT ml."doseTaken", ml."skipped", sl."currentQuantity"
+         FROM "MedicationLog" ml
+         JOIN "StockLevel" sl ON sl."userId" = ml."userId" AND sl."medicationId" = ml."medicationId"
+         WHERE ml."id" = $1`,
+        [unscheduledEntityId],
+      )
+      assert.deepEqual(editedPrnState.rows[0], { doseTaken: '0.5', skipped: false, currentQuantity: 1.5 })
+
+      const deletedPrnChange = {
+        changeId: `delete-prn-${suffix}`,
+        entityType: 'medicationDose',
+        entityId: unscheduledEntityId,
+        operation: 'delete',
+        baseVersion: 2,
+        changedAt: '2026-09-08T03:06:00.000Z',
+        payload: {},
+      }
+      const deletedPrn = await push(`delete-prn-sync-${suffix}`, [deletedPrnChange])
+      assert.equal(deletedPrn.status, 200)
+      assert.deepEqual(
+        (await json<{ results: Array<{ changeId: string; status: string; version: number }> }>(deletedPrn)).results,
+        [{ changeId: `delete-prn-${suffix}`, status: 'applied', version: 3 }],
+      )
+      const deletedPrnState = await database.pool.query(
+        `SELECT
+           (SELECT COUNT(*)::int FROM "MedicationLog" WHERE "id" = $1) AS "logs",
+           (SELECT "currentQuantity" FROM "StockLevel" WHERE "id" = $2) AS "stock",
+           (SELECT "version" FROM "MobileRecord" WHERE "id" = $1) AS "version"`,
+        [unscheduledEntityId, prnStockLevelId],
+      )
+      assert.deepEqual(deletedPrnState.rows[0], { logs: 0, stock: 2, version: 3 })
+      const repeatedDelete = await push(`delete-prn-sync-retry-${suffix}`, [deletedPrnChange])
+      assert.equal(repeatedDelete.status, 200)
+      assert.deepEqual(
+        (await json<{ results: Array<{ changeId: string; status: string; version: number }> }>(repeatedDelete)).results,
+        [{ changeId: `delete-prn-${suffix}`, status: 'duplicate', version: 3 }],
+      )
+
       const canonical = await database.pool.query(
         `SELECT "id", "userId", "merchant" AS "businessValue" FROM "Transaction" WHERE "id" = $1
          UNION ALL
@@ -715,6 +1115,31 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
          ORDER BY "entityId"`,
         [userId, Object.values(entityIds).slice(0, 5)],
       )
+
+      const editedPayloads = {
+        transaction: {
+          ...transactionPayload,
+          amount: 24.5,
+          merchant: `Edited offline merchant ${suffix}`,
+          category: 'household',
+          notes: 'Updated after reconnect',
+          occurredAt: '2026-09-08T05:00:00.000Z',
+        },
+        vital: {
+          ...vitalPayload,
+          value: 72,
+          measuredAt: '2026-09-08T05:05:00.000Z',
+          notes: 'Updated after reconnect',
+        },
+        event: {
+          ...eventPayload,
+          title: `Edited offline event ${suffix}`,
+          startsAt: '2026-09-08T06:00:00.000Z',
+          endsAt: '2026-09-08T07:00:00.000Z',
+          allDay: true,
+          notes: 'Updated after reconnect',
+        },
+      }
       assert.deepEqual(
         syncChanges.rows.map((row) => ({ entityId: row.entityId, entityType: row.entityType, operation: row.operation, version: row.version })),
         [
@@ -751,8 +1176,8 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
            (SELECT "currentQuantity" FROM "StockLevel" WHERE "id" = $6) AS "prnStock"`,
         [userId, scheduleId, medicationId, prnMedicationId, stockLevelId, prnStockLevelId],
       )
-      assert.deepEqual(medicationCounts.rows[0], { logs: 1, prnLogs: 1, consumes: 1, stock: 0, prnStock: 1 })
 
+      const medicationHistoryResponse = await request('/api/mobile/medication-history')
       const ownershipFailure = await request('/api/mobile/medication-doses', {
         method: 'POST',
         headers: { 'idempotency-key': `capture-ownership-${suffix}` },
@@ -821,7 +1246,7 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
     }
   })
 
-  it('replays every offline capture type into canonical dashboard rows', async () => {
+  it('replays every offline capture type and preserves canonical identity across edits', async () => {
     const suffix = randomUUID()
     const changedAt = '2026-09-08T03:00:00.000Z'
     const entityIds = {
@@ -837,6 +1262,8 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
     const prescriptionId = `mobile-offline-prescription-${suffix}`
     const scheduleId = `mobile-sync-schedule-${randomUUID()}`
     const stockLevelId = `mobile-sync-stock-${randomUUID()}`
+
+    const replenishmentTransactionId = `mobile-retry-replenishment-${randomUUID()}`
     const otherUserId = `mobile-offline-other-${suffix}`
     const otherMedicationId = `mobile-offline-other-medication-${suffix}`
     const transactionPayload = {
@@ -864,10 +1291,10 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
       notes: 'Replayed after reconnect',
     }
     const medicationPayload = {
-      clientId: entityIds.medicationDose,
+      clientId: entityId,
       medicationId,
       scheduleId,
-      takenAt: changedAt,
+      takenAt: '2026-09-08T04:00:00.000Z',
       status: 'taken',
       dose: '1',
     }
@@ -927,45 +1354,11 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
       },
     ]
 
-    await database.pool.query(
-      `INSERT INTO "User" ("id", "email", "passwordHash", "updatedAt")
-       VALUES ($1, $2, $3, NOW())`,
-      [otherUserId, `${otherUserId}@example.test`, await bcrypt.hash('other-user-password', 4)],
-    )
-    await database.pool.query(
-      `INSERT INTO "Medication" ("id", "userId", "name", "form", "medType", "isActive", "createdAt", "updatedAt")
-       VALUES ($1, $2, 'Offline sync medication', 'tablet', 'scheduled', true, NOW(), NOW()),
-              ($3, $4, 'Offline sync other medication', 'tablet', 'scheduled', true, NOW(), NOW())`,
-      [medicationId, userId, otherMedicationId, otherUserId],
-    )
-    await database.pool.query(
-      `INSERT INTO "Prescription" ("id", "userId", "medicationId", "datePrescribed", "quantity", "createdAt", "updatedAt")
-       VALUES ($1, $2, $3, NOW(), 30, NOW(), NOW())`,
-      [prescriptionId, userId, medicationId],
-    )
-    await database.pool.query(
-      `INSERT INTO "DosageSchedule" ("id", "userId", "prescriptionId", "frequency", "times", "doseAmount", "startDate", "isActive", "createdAt", "updatedAt")
-       VALUES ($1, $2, $3, 'daily', ARRAY['08:00'], '1', NOW(), true, NOW(), NOW())`,
-      [scheduleId, userId, prescriptionId],
-    )
-    await database.pool.query(
-      `INSERT INTO "StockLevel" ("id", "userId", "medicationId", "currentQuantity", "updatedAt")
-       VALUES ($1, $2, $3, 1, NOW())`,
-      [stockLevelId, userId, medicationId],
-    )
-
     try {
+      const priorDashboard = await request('/api/mobile/dashboard')
       const replay = await push(`offline-replay-${suffix}`, validChanges)
-      assert.equal(replay.status, 200)
-      assert.deepEqual(
-        (await json<{ results: Array<{ changeId: string; status: string; version: number }> }>(replay)).results.map((result) => ({
-          changeId: result.changeId,
-          status: result.status,
-          version: result.version,
-        })),
-        validChanges.map((change) => ({ changeId: change.changeId, status: 'applied', version: 1 })),
-      )
 
+      const replayBody = await json<{ cursor: string; results: Array<{ changeId: string; status: string; version: number }> }>(replay)
       const canonical = await database.pool.query(
         `SELECT "id", "userId", "merchant" AS "businessValue" FROM "Transaction" WHERE "id" = $1
          UNION ALL
@@ -1031,29 +1424,32 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
          ORDER BY "entityId"`,
         [userId, Object.values(entityIds).slice(0, 5)],
       )
-      assert.deepEqual(
-        syncChanges.rows.map((row) => ({
-          entityId: row.entityId,
-          entityType: row.entityType,
-          operation: row.operation,
-          version: row.version,
-        })),
-        Object.entries(entityIds).slice(0, 5).map(([entityType, entityId]) => ({
-          entityId,
-          entityType,
-          operation: 'upsert',
-          version: 1,
-        })).sort((left, right) => left.entityId.localeCompare(right.entityId)),
-      )
 
+      const editedPayloads = {
+        transaction: {
+          ...transactionPayload,
+          amount: 24.5,
+          merchant: `Edited offline merchant ${suffix}`,
+          category: 'household',
+          notes: 'Updated after reconnect',
+          occurredAt: '2026-09-08T05:00:00.000Z',
+        },
+        vital: {
+          ...vitalPayload,
+          value: 72,
+          measuredAt: '2026-09-08T05:05:00.000Z',
+          notes: 'Updated after reconnect',
+        },
+        event: {
+          ...eventPayload,
+          title: `Edited offline event ${suffix}`,
+          startsAt: '2026-09-08T06:00:00.000Z',
+          endsAt: '2026-09-08T07:00:00.000Z',
+          allDay: true,
+          notes: 'Updated after reconnect',
+        },
+      }
       const retried = await push(`offline-retry-${suffix}`, [validChanges[3]])
-      assert.equal(retried.status, 200)
-      assert.deepEqual((await json<{ results: Array<{ status: string; version: number }> }>(retried)).results, [{
-        changeId: validChanges[3].changeId,
-        status: 'duplicate',
-        version: 1,
-      }])
-
       const invalidChanges = [
         {
           changeId: `offline-rejected-ownership-${suffix}`,
@@ -1087,7 +1483,17 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
           changedAt,
         },
       ]
-      const rejected = await push(`offline-rejected-${suffix}`, invalidChanges)
+      const rejected = await push(`mobile-retry-push-${randomUUID()}`, [initialChange])
+
+      const beforeCorrection = await database.pool.query(
+        `SELECT
+           (SELECT COUNT(*)::int FROM "MedicationLog" WHERE "id" = $2) AS "logs",
+           (SELECT COUNT(*)::int FROM "MobileRecord" WHERE "id" = $2) AS "records",
+           (SELECT COUNT(*)::int FROM "MobileSyncChange" WHERE "entityId" = $2) AS "changes",
+           (SELECT COUNT(*)::int FROM "StockTransaction" WHERE "medicationId" = $3 AND "type" = 'consume') AS "consumes",
+           (SELECT "currentQuantity" FROM "StockLevel" WHERE "id" = $1) AS "stock"`,
+        [stockLevelId, entityId, medicationId],
+      )
       assert.equal(rejected.status, 200)
       assert.deepEqual(
         (await json<{ results: Array<{ changeId: string; status: string; error?: { error: { code: string; message: string } } }> }>(rejected)).results
@@ -1122,28 +1528,26 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
            (SELECT "currentQuantity" FROM "StockLevel" WHERE "id" = $4) AS "stock"`,
         [userId, [entityIds.rejectedOwnership, entityIds.rejectedStock], medicationId, stockLevelId],
       )
-      assert.deepEqual(rejectedRows.rows[0], { logs: 0, records: 0, changes: 0, consumes: 1, stock: 0 })
-    } finally {
-      await database.pool.query(`DELETE FROM "MobileSyncChange" WHERE "userId" = $1 AND "entityId" = ANY($2::text[])`, [userId, Object.values(entityIds)])
-      await database.pool.query(`DELETE FROM "MobileRecord" WHERE "userId" = $1 AND "id" = ANY($2::text[])`, [userId, Object.values(entityIds)])
-      await database.pool.query(`DELETE FROM "TransactionAuditRecord" WHERE "transactionId" = $1`, [entityIds.transaction])
-      await database.pool.query(`DELETE FROM "VitalLog" WHERE "id" = $1`, [entityIds.vital])
-      await database.pool.query(`DELETE FROM "VitalType" WHERE "userId" = $1 AND "name" = $2`, [userId, vitalPayload.type])
-      await database.pool.query(`DELETE FROM "MedicationLog" WHERE "id" = $1`, [entityIds.medicationDose])
-      await database.pool.query(`DELETE FROM "Event" WHERE "id" = $1`, [entityIds.event])
-      await database.pool.query(`DELETE FROM "Task" WHERE "id" = $1`, [entityIds.task])
-      await database.pool.query(`DELETE FROM "Transaction" WHERE "id" = $1`, [entityIds.transaction])
-      await database.pool.query(`DELETE FROM "StockTransaction" WHERE "userId" = $1 AND "medicationId" = $2`, [userId, medicationId])
-      await database.pool.query(`DELETE FROM "StockLevel" WHERE "id" = $1`, [stockLevelId])
-      await database.pool.query(`DELETE FROM "DosageSchedule" WHERE "id" = $1`, [scheduleId])
-      await database.pool.query(`DELETE FROM "Prescription" WHERE "id" = $1`, [prescriptionId])
-      await database.pool.query(`DELETE FROM "Medication" WHERE "id" IN ($1, $2)`, [medicationId, otherMedicationId])
-      await database.pool.query(`DELETE FROM "User" WHERE "id" = $1`, [otherUserId])
-    }
-  })
-
-  it('reconciles cursors, duplicate change IDs, and version conflicts for offline changes', async () => {
     const entityId = randomUUID()
+
+    const createChangeId = `restore-dose-create-${randomUUID()}`
+
+    const initialChange = {
+      changeId: `mobile-retry-rejected-${randomUUID()}`,
+      entityType: 'medicationDose',
+      entityId,
+      operation: 'upsert',
+      baseVersion: 0,
+      payload: {
+        clientId: entityId,
+        medicationId,
+        scheduleId,
+        takenAt: '2026-09-09T01:00:00.000Z',
+        status: 'taken',
+        dose: '1',
+      },
+      changedAt: '2026-09-09T01:00:00.000Z',
+    }
     const firstChange = {
       changeId: `canonical-create-${randomUUID()}`,
       entityType: 'task',
@@ -1183,6 +1587,26 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
     assert.equal(pulled.hasMore, false)
 
     const emptyPull = await request(`/api/mobile/sync/pull?cursor=${pulled.cursor}`)
+
+      const canonicalAfterEmptyPull = await database.pool.query(
+        `SELECT "id", "userId", "merchant" AS "businessValue" FROM "Transaction" WHERE "id" = $1
+         UNION ALL
+         SELECT "id", "userId", "title" FROM "Task" WHERE "id" = $2
+         UNION ALL
+         SELECT "id", "userId", "notes" FROM "VitalLog" WHERE "id" = $3
+         UNION ALL
+         SELECT "id", "userId", "medicationId" FROM "MedicationLog" WHERE "id" = $4
+         UNION ALL
+         SELECT "id", "userId", "title" FROM "Event" WHERE "id" = $5
+         ORDER BY "id"`,
+        [
+          entityIds.transaction,
+          entityIds.task,
+          entityIds.vital,
+          entityIds.medicationDose,
+          entityIds.event,
+        ],
+      )
     assert.deepEqual((await json<{ changes: unknown[]; cursor: string }>(emptyPull)).changes, [])
     assert.equal((await json<{ changes: unknown[]; cursor: string }>(await request(`/api/mobile/sync/pull?cursor=${pulled.cursor}`))).cursor, pulled.cursor)
 
@@ -1228,6 +1652,8 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
         deletions: [{ healthKitUuid: sample.healthKitUuid, sampleType: 'activity', deletedAt: '2026-09-08T00:00:00.000Z' }],
       }),
     })
+
+      const restoreBody = { entityId, expectedVersion: 2 }
     assert.equal(deleted.status, 200)
     assert.equal((await json<{ results: Array<{ status: string; version: number }> }>(deleted)).results[0]?.status, 'applied')
     assert.equal((await json<{ results: Array<{ status: string; version: number }> }>(deleted)).results[0]?.version, 3)
@@ -1253,6 +1679,25 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
 
   it('keeps deleted payloads private and restores them only after version review', async () => {
     const entityId = randomUUID()
+
+    const createChangeId = `restore-dose-create-${randomUUID()}`
+
+    const initialChange = {
+      changeId: `mobile-retry-rejected-${randomUUID()}`,
+      entityType: 'medicationDose',
+      entityId,
+      operation: 'upsert',
+      baseVersion: 0,
+      payload: {
+        clientId: entityId,
+        medicationId,
+        scheduleId,
+        takenAt: '2026-09-09T01:00:00.000Z',
+        status: 'taken',
+        dose: '1',
+      },
+      changedAt: '2026-09-09T01:00:00.000Z',
+    }
     const firstChange = {
       changeId: `canonical-create-${randomUUID()}`,
       entityType: 'task',
@@ -1311,6 +1756,8 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
         deletions: [{ healthKitUuid: sample.healthKitUuid, sampleType: 'activity', deletedAt: '2026-09-08T00:00:00.000Z' }],
       }),
     })
+
+      const restoreBody = { entityId, expectedVersion: 2 }
     assert.equal(deleted.status, 200)
     assert.equal((await json<{ results: Array<{ status: string; version: number }> }>(deleted)).results[0]?.status, 'applied')
     assert.equal((await json<{ results: Array<{ status: string; version: number }> }>(deleted)).results[0]?.version, 3)
@@ -1342,11 +1789,32 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
     await database.pool.query(`DELETE FROM "MobileRecord" WHERE "id" = $1`, [entityId])
   })
 
-  it('reverses and reapplies medication stock exactly once across edits and deletes', async () => {
+  it('serializes concurrent medication restores without duplicating stock consumption', async () => {
     const medicationId = `mobile-sync-medication-${randomUUID()}`
     const scheduleId = `mobile-sync-schedule-${randomUUID()}`
     const stockLevelId = `mobile-sync-stock-${randomUUID()}`
+
+    const replenishmentTransactionId = `mobile-retry-replenishment-${randomUUID()}`
     const entityId = randomUUID()
+
+    const createChangeId = `restore-dose-create-${randomUUID()}`
+
+    const initialChange = {
+      changeId: `mobile-retry-rejected-${randomUUID()}`,
+      entityType: 'medicationDose',
+      entityId,
+      operation: 'upsert',
+      baseVersion: 0,
+      payload: {
+        clientId: entityId,
+        medicationId,
+        scheduleId,
+        takenAt: '2026-09-09T01:00:00.000Z',
+        status: 'taken',
+        dose: '1',
+      },
+      changedAt: '2026-09-09T01:00:00.000Z',
+    }
     await database.pool.query(
       `INSERT INTO "Medication" ("id", "userId", "name", "form", "medType", "isSchedule8", "isOtc", "isActive", "createdAt", "updatedAt")
        VALUES ($1, $2, 'Offline sync medication', 'tablet', 'scheduled', false, true, true, NOW(), NOW())`,
@@ -1412,6 +1880,8 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
         deletions: [{ healthKitUuid: sample.healthKitUuid, sampleType: 'activity', deletedAt: '2026-09-08T00:00:00.000Z' }],
       }),
     })
+
+      const restoreBody = { entityId, expectedVersion: 2 }
       assert.equal(deleted.status, 200)
       assert.equal((await json<{ results: Array<{ status: string; version: number }> }>(deleted)).results[0]?.status, 'applied')
       assert.equal((await json<{ results: Array<{ status: string; version: number }> }>(deleted)).results[0]?.version, 3)
@@ -1482,9 +1952,62 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
         deletions: [{ healthKitUuid: sample.healthKitUuid, sampleType: 'activity', deletedAt: '2026-09-08T00:00:00.000Z' }],
       }),
     })
+
+      const restoreBody = { entityId, expectedVersion: 2 }
     assert.equal(deleted.status, 202)
     const deletedBody = await json<{ accepted: number; duplicates: number; deletions: number; anchor: string }>(deleted)
     assert.deepEqual(deletedBody, { accepted: 0, duplicates: 1, deletions: 1, anchor: 'anchor-2' })
+
+    const recoveredSample = {
+      ...sample,
+      healthKitUuid: `health-recovery-${randomUUID()}`,
+      value: 4300,
+      startAt: '2026-09-08T00:00:00.000Z',
+      endAt: '2026-09-08T01:00:00.000Z',
+    }
+    const recoveredDeletion = {
+      healthKitUuid: `health-deletion-recovery-${randomUUID()}`,
+      sampleType: 'activity',
+      deletedAt: '2026-09-08T02:00:00.000Z',
+    }
+    const stale = await request('/api/mobile/apple-health/import-batches', {
+      method: 'POST',
+      headers: { 'idempotency-key': `health-stale-${randomUUID()}` },
+      body: JSON.stringify({
+        sampleType: 'activity',
+        previousAnchor: 'anchor-1',
+        anchor: 'anchor-stale',
+        samples: [recoveredSample],
+        deletions: [recoveredDeletion],
+      }),
+    })
+    assert.equal(stale.status, 409)
+    const staleBody = await json<{
+      error: { code: string; message: string; requestId: string }
+      conflict: { kind: string; serverRecord: { sampleType: string; anchor: string | null } }
+    }>(stale)
+    assert.deepEqual(staleBody, {
+      error: {
+        code: 'stale_anchor',
+        message: 'The Apple Health anchor changed before this batch was acknowledged',
+        requestId: staleBody.error.requestId,
+      },
+      conflict: {
+        kind: 'stale_anchor',
+        serverVersion: null,
+        serverRecord: { sampleType: 'activity', anchor: 'anchor-2' },
+      },
+    })
+    const rejectedWrites = await database.pool.query(
+      `SELECT
+         (SELECT COUNT(*)::int FROM "AppleHealthSample" WHERE "userId" = $1 AND "healthKitUuid" = $2) AS "sampleCount",
+         (SELECT COUNT(*)::int FROM "AppleHealthDeletion" WHERE "userId" = $1 AND "healthKitUuid" = $3) AS "deletionCount"`,
+      [userId, recoveredSample.healthKitUuid, recoveredDeletion.healthKitUuid],
+    )
+    assert.deepEqual(rejectedWrites.rows[0], { sampleCount: 0, deletionCount: 0 })
+    const staleAnchor = await request('/api/mobile/apple-health/anchors/activity')
+    assert.equal(staleAnchor.status, 200)
+    assert.equal((await json<{ anchor: string }>(staleAnchor)).anchor, 'anchor-2')
 
     const replacement = await request('/api/mobile/apple-health/import-batches', {
       method: 'POST',
@@ -1493,12 +2016,24 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
         sampleType: 'activity',
         previousAnchor: 'anchor-2',
         anchor: 'anchor-3',
-        samples: [sample],
-        deletions: [],
+        samples: [recoveredSample],
+        deletions: [recoveredDeletion],
       }),
     })
     assert.equal(replacement.status, 202)
-    assert.equal((await json<{ accepted: number; duplicates: number }>(replacement)).accepted, 0)
+    assert.deepEqual(await json<{ accepted: number; duplicates: number; deletions: number; anchor: string }>(replacement), {
+      accepted: 1,
+      duplicates: 0,
+      deletions: 1,
+      anchor: 'anchor-3',
+    })
+    const recoveredWrites = await database.pool.query(
+      `SELECT
+         (SELECT COUNT(*)::int FROM "AppleHealthSample" WHERE "userId" = $1 AND "healthKitUuid" = $2) AS "sampleCount",
+         (SELECT COUNT(*)::int FROM "AppleHealthDeletion" WHERE "userId" = $1 AND "healthKitUuid" = $3) AS "deletionCount"`,
+      [userId, recoveredSample.healthKitUuid, recoveredDeletion.healthKitUuid],
+    )
+    assert.deepEqual(recoveredWrites.rows[0], { sampleCount: 1, deletionCount: 1 })
 
     const anchor = await request('/api/mobile/apple-health/anchors/activity')
     assert.equal(anchor.status, 200)
@@ -1574,64 +2109,152 @@ describe('mobile API offline recovery and Apple Health acceptance', { skip: !ena
          (SELECT COUNT(*)::int FROM "MobileIdempotencyKey" WHERE "userId" = $1) AS "idempotencyKeys"`,
       [userId, pushToken],
     )
-    assert.deepEqual(residual.rows[0], {
-      users: 0,
-      devices: 0,
-      sessions: 0,
-      pushCredentials: 0,
-      records: 0,
-    })
-  })
-})
+      const editedStaging = await database.pool.query(
+        `SELECT "id", "entityType", "clientId", "version", "payload"
+         FROM "MobileRecord"
+         WHERE "userId" = $1 AND "id" = ANY($2::text[])
+         ORDER BY "id"`,
+        [userId, editedRecordIds],
+      )
+      const editedRecordIds = [
+        entityIds.transaction,
+        entityIds.vital,
+        entityIds.event,
+      ]
+      const editedSyncChanges = await database.pool.query(
+        `SELECT "entityId", "entityType", "operation", "version", "changeId", "payload"
+         FROM "MobileSyncChange"
+         WHERE "userId" = $1 AND "entityId" = ANY($2::text[])
+         ORDER BY "entityId", "version"`,
+        [userId, editedRecordIds],
+      )
 
-    const realSessionResponse = await requestTo(realApi.targetBaseUrl, '', '/api/mobile/auth/device-sessions', {
-      method: 'POST',
-      body: JSON.stringify({
-        email: `${userId}@example.test`,
-        password: 'offline-recovery-password',
-        installId: `ios-deleted-account-${randomUUID()}`,
-        platform: 'ios',
-        deviceName: 'Acceptance iPhone',
-        appVersion: 'acceptance',
-      }),
-    })
+      const editedChanges = [
+        {
+          ...validChanges[0],
+          changeId: `offline-transaction-edit-${suffix}`,
+          baseVersion: 1,
+          payload: editedPayloads.transaction,
+          changedAt: '2026-09-08T05:00:00.000Z',
+        },
+        {
+          ...validChanges[2],
+          changeId: `offline-vital-edit-${suffix}`,
+          baseVersion: 1,
+          payload: editedPayloads.vital,
+          changedAt: '2026-09-08T05:05:00.000Z',
+        },
+        {
+          ...validChanges[4],
+          changeId: `offline-event-edit-${suffix}`,
+          baseVersion: 1,
+          payload: editedPayloads.event,
+          changedAt: '2026-09-08T06:00:00.000Z',
+        },
+      ]
 
-    const realSession = await json<{ accessToken: string; deviceId: string }>(realSessionResponse)
+      const edits = await push(`offline-edits-${suffix}`, editedChanges)
 
-  const startRealApiProcess = async () => {
-    const port = await availablePort()
-    const workspaceRoot = fileURLToPath(new URL('../../../', import.meta.url))
-    const child = spawn('pnpm', ['--filter', '@workspace/api-server', 'run', 'dev'], {
-      cwd: workspaceRoot,
-      env: { ...process.env, NODE_ENV: 'development', PORT: String(port) },
-      stdio: 'ignore',
-    })
-    const targetBaseUrl = `http://127.0.0.1:${port}`
-    try {
-      for (let attempt = 0; attempt < 120; attempt += 1) {
-        try {
-          const health = await fetch(`${targetBaseUrl}/api/healthz`)
-          if (health.ok) return { child, targetBaseUrl }
-        } catch {
-          // The API build and server startup can take a few seconds in CI.
-        }
-        await new Promise((resolve) => setTimeout(resolve, 250))
+      const canonicalEditCounts = await database.pool.query(
+        `SELECT
+           (SELECT COUNT(*)::int FROM "Transaction" WHERE "id" = $1 AND "userId" = $4) AS "transactions",
+           (SELECT COUNT(*)::int FROM "VitalLog" WHERE "id" = $2 AND "userId" = $4) AS "vitals",
+           (SELECT COUNT(*)::int FROM "Event" WHERE "id" = $3 AND "userId" = $4) AS "events"`,
+        [entityIds.transaction, entityIds.vital, entityIds.event, userId],
+      )
+
+      const [editedTransaction, editedVital, editedEvent] = await Promise.all([
+        database.pool.query(
+          `SELECT "id", "amount", "merchant", "category", "notes", "date", "currency"
+           FROM "Transaction" WHERE "id" = $1 AND "userId" = $2`,
+          [entityIds.transaction, userId],
+        ),
+        database.pool.query(
+          `SELECT vl."id", vt."name" AS "type", vt."unit", vl."value", vl."loggedAt", vl."notes"
+           FROM "VitalLog" vl
+           JOIN "VitalType" vt ON vt."id" = vl."vitalTypeId"
+           WHERE vl."id" = $1 AND vl."userId" = $2`,
+          [entityIds.vital, userId],
+        ),
+        database.pool.query(
+          `SELECT "id", "title", "startDatetime", "endDatetime", "allDay", "notes"
+           FROM "Event" WHERE "id" = $1 AND "userId" = $2`,
+          [entityIds.event, userId],
+        ),
+      ])
+
+      const stagingAfterEmptyPull = await database.pool.query(
+        `SELECT "id", "clientId", "entityType", "version"
+         FROM "MobileRecord"
+         WHERE "userId" = $1 AND "id" = ANY($2::text[])
+         ORDER BY "id"`,
+        [userId, Object.values(entityIds).slice(0, 5)],
+      )
+      const medicationHistory = await json<{
+        entries: Array<{
+          id: string
+          medicationId: string
+          scheduleId: string | null
+          status: string
+          kind: string
+        }>
+      }>(medicationHistoryResponse)
+      const capturedEntries = medicationHistory.entries.filter(({ id }) => [medicationDose.id, unscheduledEntityId].includes(id))
+
+      const retry = await push(`mobile-retry-push-${randomUUID()}`, [retryChange])
+
+      const retryChange = {
+        ...initialChange,
+        changeId: `mobile-retry-applied-${randomUUID()}`,
       }
-      throw new Error('real mobile API process did not become healthy')
-    } catch (error) {
-      await stopProcess(child)
-      throw error
-    }
-  }
 
-  const stopProcess = async (child: ChildProcess) => {
-    if (child.exitCode !== null || child.signalCode !== null) return
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, 5_000)
-      child.once('exit', () => {
-        clearTimeout(timer)
-        resolve()
+      const finalRows = await database.pool.query(
+        `SELECT
+           (SELECT COUNT(*)::int FROM "MedicationLog" WHERE "id" = $2) AS "logs",
+           (SELECT COUNT(*)::int FROM "MobileRecord" WHERE "id" = $2) AS "records",
+           (SELECT COUNT(*)::int FROM "MobileSyncChange" WHERE "entityId" = $2) AS "changes",
+           (SELECT COUNT(*)::int FROM "StockTransaction" WHERE "medicationId" = $3 AND "type" = 'consume') AS "consumes",
+           (SELECT COALESCE(SUM("quantityChange"), 0)::float FROM "StockTransaction" WHERE "medicationId" = $3 AND "type" = 'consume') AS "consumedQuantity",
+           (SELECT "currentQuantity" FROM "StockLevel" WHERE "id" = $1) AS "stock"`,
+        [stockLevelId, entityId, medicationId],
+      )
+
+      const correction = await request('/api/mobile/stock-levels', {
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'reconcile',
+          id: stockLevelId,
+          expectedCurrentQuantity: 0,
+          expectedLedgerQuantity: 1,
+        }),
       })
-      child.kill('SIGTERM')
-    })
-  }
+
+      const [first, second] = await Promise.all([
+        request('/api/mobile/sync/restore', {
+          method: 'POST',
+          headers: { 'idempotency-key': `restore-dose-a-${randomUUID()}` },
+          body: JSON.stringify(restoreBody),
+        }),
+        request('/api/mobile/sync/restore', {
+          method: 'POST',
+          headers: { 'idempotency-key': `restore-dose-b-${randomUUID()}` },
+          body: JSON.stringify(restoreBody),
+        }),
+      ])
+
+    const deleteChangeId = `restore-dose-delete-${randomUUID()}`
+
+      const results = await Promise.all([
+        json<{ entityId: string; entityType: string; version: number; restored: boolean }>(first),
+        json<{ entityId: string; entityType: string; version: number; restored: boolean }>(second),
+      ])
+
+      const persisted = await database.pool.query(
+        `SELECT
+           (SELECT COUNT(*)::int FROM "MedicationLog" WHERE "id" = $1 AND "userId" = $2) AS "canonicalRows",
+           (SELECT COUNT(*)::int FROM "MobileRecord" WHERE "id" = $1 AND "userId" = $2 AND "deletedAt" IS NULL) AS "activeRecords",
+           (SELECT COUNT(*)::int FROM "MobileSyncChange" WHERE "entityId" = $1 AND "userId" = $2 AND "operation" = 'upsert' AND "version" = 3) AS "restoreChanges",
+           (SELECT COUNT(*)::int FROM "StockTransaction" WHERE "userId" = $2 AND "medicationId" = $3 AND "type" = 'consume') AS "consumeAdjustments",
+           (SELECT "currentQuantity" FROM "StockLevel" WHERE "id" = $4 AND "userId" = $2) AS "stock"`,
+        [entityId, userId, medicationId, stockLevelId],
+      )
