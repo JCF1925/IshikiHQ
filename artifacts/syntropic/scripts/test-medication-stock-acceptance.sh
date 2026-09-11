@@ -118,8 +118,8 @@ run_wrapper() {
   local evidence_mode="${5:-legacy}"
   local database_url_override="${6:-$database_url}"
   local psql_mode="${7:-}"
+  local release_id="${8:-release-record}"
   local output_file="$test_dir/$label.log"
-  local release_id="release-record"
   local evidence_file="$release_evidence_dir/$release_id/medication-stock-acceptance-evidence.json"
   local -a evidence_environment
   local status=0
@@ -385,6 +385,17 @@ for target in disposable release-validation; do
     { printf '%s target did not attempt the acceptance test\n' "$target" >&2; exit 1; }
   assert_evidence_shape "$evidence_file" passed 3 3 0 0 0 "allowed-$target"
 done
+
+rerun_release_id='rerun-permissions'
+rerun_release_directory="$release_evidence_dir/$rerun_release_id"
+mkdir -p "$rerun_release_directory"
+chmod 0777 "$rerun_release_directory"
+read -r rerun_status rerun_evidence_file _ < <(
+  run_wrapper rerun-permissive-directory disposable disposable pass legacy "$database_url" '' "$rerun_release_id"
+)
+[[ "$rerun_status" -eq 0 ]] ||
+  { printf 'rerun with an existing permissive release directory did not pass\n' >&2; exit 1; }
+assert_evidence_shape "$rerun_evidence_file" passed 3 3 0 0 0 rerun-permissive-directory
 
 read -r failed_status failed_evidence_file _ < <(run_wrapper "failed-acceptance" disposable disposable fail)
 [[ "$failed_status" -ne 0 ]] ||
