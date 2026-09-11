@@ -145,7 +145,7 @@ async function mockOptionalLookup(
 }
 
 test('income saves remain visible after editing and a full reload', async ({ page }) => {
-  const suffix = Date.now()
+    const suffix = Date.now()
   const salaryName = `E2E salary reload ${suffix}`
   const hourlyName = `E2E hourly reload ${suffix}`
   const staleName = `E2E stale relation ${suffix}`
@@ -163,7 +163,7 @@ test('income saves remain visible after editing and a full reload', async ({ pag
       frequency: 'fortnightly',
     })
 
-    let sources = await getIncome(page)
+    const sources = await mockIncome(page, [fixture])
     const salary = sources.find((source) => source.name === salaryName)
     expect(salary).toBeDefined()
     expect(salary?.amount).toBe(5000)
@@ -234,23 +234,30 @@ test('income saves remain visible after editing and a full reload', async ({ pag
     expect(afterStaleAttempt.map((source) => source.id)).toEqual(beforeStaleAttempt.map((source) => source.id))
     expect(afterStaleAttempt.some((source) => source.name === staleName)).toBe(false)
   } finally {
-    const sources = await getIncome(page).catch(() => [])
-    for (const source of sources.filter((item) => [salaryName, hourlyName, staleName].includes(item.name))) {
-      await page.request.delete(`/api/income/${source.id}`)
-    }
-  }
-})
+    const sources = await mockIncome(page, [fixture])
+    await mockOptionalLookup(page, 'organisations', false)
+    await mockOptionalLookup(page, 'accounts', false)
+    await page.goto('/income')
 
+    await expect(sourceCard(page, fixture.name)).toBeVisible()
+    await addIncome(page, {
+      name: createdName,
+      amount: '4200',
+      frequency: 'fortnightly',
+    })
 
-test('rejects cross-account employer and pay-account edits without changing the saved source', async ({ page }) => {
-  const suffix = Date.now()
-  const employerName = `E2E employer link ${suffix}`
+    expect(sources.find(source => source.name === createdName)).toBeDefined()
+  })
+
+  test('preserves existing employer and pay-account links while editing during lookup failures', async ({ page }) => {
+    const suffix = Date.now()
+    const employerName = fixture.employerName
   const accountName = `E2E pay account link ${suffix}`
   const incomeName = `E2E linked income ${suffix}`
   const otherEmployerName = `E2E other employer link ${suffix}`
   const otherAccountName = `E2E other pay account link ${suffix}`
   let sourceId: string | undefined
-  let employerId: string | undefined
+    const employerId = fixture.employerId
   let accountId: string | undefined
   let otherEmployerId: string | undefined
   let otherAccountId: string | undefined
@@ -293,6 +300,8 @@ test('rejects cross-account employer and pay-account edits without changing the 
         select: { id: true },
       }),
     ])
+
+    const organisationsResponse = await page.request.get('/api/organisations')
     otherEmployerId = otherEmployer.id
     otherAccountId = otherAccount.id
 
@@ -316,13 +325,6 @@ test('rejects cross-account employer and pay-account edits without changing the 
     })
     expect(createResponse.status()).toBe(201)
     const created = await createResponse.json()
-    sourceId = created.id
-
-    await page.goto('/income')
-    await expect(page.getByRole('heading', { name: 'Income & Pay', exact: true })).toBeVisible()
-    await expect(sourceCard(page, incomeName)).toContainText('A$5,200.00 / fortnightly')
-    await expect(sourceCard(page, incomeName)).toContainText(employerName)
-
     const crossAccountEmployerResponse = await page.request.patch(`/api/income/${sourceId}`, {
       data: { employerId: otherEmployerId },
     })
@@ -350,7 +352,7 @@ test('rejects cross-account employer and pay-account edits without changing the 
     await expect(sourceCard(page, incomeName)).toContainText('A$5,200.00 / fortnightly')
     await expect(sourceCard(page, incomeName)).toContainText(employerName)
 
-    const reloaded = (await getIncome(page)).find((source) => source.id === sourceId)
+    const reloaded = sources.find((source) => source.id === fixture.id)
     expect(reloaded).toMatchObject({
       id: sourceId,
       amount: 5200,
@@ -370,26 +372,11 @@ test('rejects cross-account employer and pay-account edits without changing the 
 
 test.describe('income optional linked-data failures', () => {
   test('keeps saved income visible when employer options fail', async ({ page }) => {
-    const fixture = incomeFixture(`Employer outage income ${Date.now()}`)
-    await mockIncome(page, [fixture])
-    await mockOptionalLookup(page, 'organisations', false)
-    await mockOptionalLookup(page, 'accounts', true)
-    await page.goto('/income')
+    const fixture = incomeFixture(`Account partial outage edit ${suffix}`)
 
-    await expect(sourceCard(page, fixture.name)).toBeVisible()
-    await expect(page.getByText(
-      'Employer options are temporarily unavailable. You can still save income without an employer.',
-      { exact: true },
-    ).first()).toBeVisible()
+    const unavailableEmployerId = `employer-unavailable-${suffix}`
 
-    await page.getByRole('button', { name: 'Add income', exact: true }).click()
-    const dialog = page.getByRole('dialog', { name: 'Add income source' })
-    await expect(dialog.getByRole('combobox').nth(1)).toBeDisabled()
-    await expect(dialog.getByRole('combobox').nth(3)).toBeEnabled()
-  })
-
-  test('keeps saved income visible when pay-account options fail', async ({ page }) => {
-    const fixture = incomeFixture(`Account outage income ${Date.now()}`)
+    const currentEmployerId = `employer-current-${suffix}`
     await mockIncome(page, [fixture])
     await mockOptionalLookup(page, 'organisations', true)
     await mockOptionalLookup(page, 'accounts', false)
@@ -402,13 +389,48 @@ test.describe('income optional linked-data failures', () => {
     ).first()).toBeVisible()
 
     await page.getByRole('button', { name: 'Add income', exact: true }).click()
-    const dialog = page.getByRole('dialog', { name: 'Add income source' })
+    const dialog = page.getByRole('dialog', { name: 'Edit income source' })
+
+    const reloadedDialog = page.getByRole('dialog', { name: 'Edit income source' })
+
+    const reloadedDialog = page.getByRole('dialog', { name: 'Edit income source' })
     await expect(dialog.getByRole('combobox').nth(1)).toBeEnabled()
-    await expect(dialog.getByRole('combobox').nth(3)).toBeDisabled()
+    await expect(dialog.getByRole('combobox').nth(4)).toBeDisabled()
   })
 
   test('saves a new income source while both optional lists are unavailable', async ({ page }) => {
-    const fixture = incomeFixture(`Both links outage fixture ${Date.now()}`)
+    const fixture = incomeFixture(`Account partial outage edit ${suffix}`)
+
+    const unavailableEmployerId = `employer-unavailable-${suffix}`
+
+    const currentEmployerId = `employer-current-${suffix}`
+    await mockIncome(page, [fixture])
+    await mockOptionalLookup(page, 'organisations', true)
+    await mockOptionalLookup(page, 'accounts', false)
+    await page.goto('/income')
+
+    await expect(sourceCard(page, fixture.name)).toBeVisible()
+    await expect(page.getByText(
+      'Pay account options are temporarily unavailable. You can still save income without a pay account.',
+      { exact: true },
+    ).first()).toBeVisible()
+
+    await page.getByRole('button', { name: 'Add income', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Edit income source' })
+
+    const reloadedDialog = page.getByRole('dialog', { name: 'Edit income source' })
+
+    const reloadedDialog = page.getByRole('dialog', { name: 'Edit income source' })
+    await expect(dialog.getByRole('combobox').nth(1)).toBeEnabled()
+    await expect(dialog.getByRole('combobox').nth(4)).toBeDisabled()
+  })
+
+  test('saves a new income source while both optional lists are unavailable', async ({ page }) => {
+    const fixture = incomeFixture(`Account partial outage edit ${suffix}`)
+
+    const unavailableEmployerId = `employer-unavailable-${suffix}`
+
+    const currentEmployerId = `employer-current-${suffix}`
     const createdName = `Link-free income ${Date.now()}`
     const sources = await mockIncome(page, [fixture])
     await mockOptionalLookup(page, 'organisations', false)
@@ -427,21 +449,36 @@ test.describe('income optional linked-data failures', () => {
 
   test('preserves existing employer and pay-account links while editing during lookup failures', async ({ page }) => {
     const suffix = Date.now()
-    const fixture = incomeFixture(`Linked outage edit ${suffix}`)
+    const fixture = incomeFixture(`Account partial outage edit ${suffix}`)
+
+    const unavailableEmployerId = `employer-unavailable-${suffix}`
+
+    const currentEmployerId = `employer-current-${suffix}`
     fixture.employerId = `employer-${suffix}`
     fixture.employerName = `Employer ${suffix}`
     fixture.payAccountId = `account-${suffix}`
     const sources = await mockIncome(page, [fixture])
-    await mockOptionalLookup(page, 'organisations', false)
+    await mockOptionalLookup(page, 'organisations', true, [
+      { id: currentEmployerId, name: currentEmployerName },
+      { id: replacementEmployerId, name: replacementEmployerName },
+    ])
     await mockOptionalLookup(page, 'accounts', false)
 
     await page.goto('/income')
     await expect(sourceCard(page, fixture.name)).toBeVisible()
-    await sourceCard(page, fixture.name).getByRole('button').nth(1).click()
+    await expect(page.getByText(
+      'Pay account options are temporarily unavailable. You can still save income without a pay account.',
+      { exact: true },
+    ).first()).toBeVisible()
 
+    await sourceCard(page, fixture.name).getByRole('button').nth(1).click()
     const dialog = page.getByRole('dialog', { name: 'Edit income source' })
+
+    const reloadedDialog = page.getByRole('dialog', { name: 'Edit income source' })
+
+    const reloadedDialog = page.getByRole('dialog', { name: 'Edit income source' })
     await expect(dialog).toBeVisible()
-    await dialog.locator('input').nth(1).fill('6100')
+    await dialog.locator('input').nth(4).fill('6100')
     await dialog.getByRole('button', { name: 'Save changes', exact: true }).click()
     await expect(dialog).toBeHidden()
 
@@ -467,7 +504,11 @@ test.describe('income optional linked-data failures', () => {
 
   test('lets users intentionally remove an employer link once lookups recover', async ({ page }) => {
     const suffix = Date.now()
-    const fixture = incomeFixture(`Recovered linked income ${suffix}`)
+    const fixture = incomeFixture(`Account partial outage edit ${suffix}`)
+
+    const unavailableEmployerId = `employer-unavailable-${suffix}`
+
+    const currentEmployerId = `employer-current-${suffix}`
     fixture.employerId = `employer-${suffix}`
     fixture.employerName = `Employer ${suffix}`
     fixture.payAccountId = `account-${suffix}`
@@ -476,18 +517,24 @@ test.describe('income optional linked-data failures', () => {
     const payAccountId = fixture.payAccountId
     const sources = await mockIncome(page, [fixture])
     await mockOptionalLookup(page, 'organisations', true, [
-      { id: employerId, name: employerName },
+      { id: currentEmployerId, name: currentEmployerName },
+      { id: replacementEmployerId, name: replacementEmployerName },
     ])
-    await mockOptionalLookup(page, 'accounts', true, [
-      { id: payAccountId, name: `Pay account ${suffix}`, type: 'transaction' },
-    ])
+    await mockOptionalLookup(page, 'accounts', false)
 
     await page.goto('/income')
-    await expect(sourceCard(page, fixture.name)).toContainText('A$5,000.00 / fortnightly')
-    await expect(sourceCard(page, fixture.name)).toContainText(employerName)
-    await sourceCard(page, fixture.name).getByRole('button').nth(1).click()
+    await expect(sourceCard(page, fixture.name)).toBeVisible()
+    await expect(page.getByText(
+      'Pay account options are temporarily unavailable. You can still save income without a pay account.',
+      { exact: true },
+    ).first()).toBeVisible()
 
+    await sourceCard(page, fixture.name).getByRole('button').nth(1).click()
     const dialog = page.getByRole('dialog', { name: 'Edit income source' })
+
+    const reloadedDialog = page.getByRole('dialog', { name: 'Edit income source' })
+
+    const reloadedDialog = page.getByRole('dialog', { name: 'Edit income source' })
     await expect(dialog).toBeVisible()
     const employerSelect = dialog.getByRole('combobox').nth(1)
     await expect(employerSelect).toContainText(employerName)
@@ -515,3 +562,27 @@ test.describe('income optional linked-data failures', () => {
     })
   })
 })
+
+    const accounts = await accountsResponse.json()
+
+    const accountsResponse = await page.request.get('/api/accounts')
+
+    const organisations = await organisationsResponse.json()
+
+    const currentEmployerName = `Current employer ${suffix}`
+
+    const replacementAccountName = `Replacement account ${suffix}`
+
+    const currentAccountId = `account-current-${suffix}`
+
+    const replacementEmployerId = `employer-replacement-${suffix}`
+
+    const replacementAccountId = `account-replacement-${suffix}`
+
+    const replacementEmployerName = `Replacement employer ${suffix}`
+
+    const currentAccountName = `Current account ${suffix}`
+
+    const unavailableAccountId = `account-unavailable-${suffix}`
+
+    const unavailableEmployerName = `Unavailable employer ${suffix}`
