@@ -69,6 +69,17 @@ export async function verifyUploadedFile(cloudStoragePath: string, expectedByteS
   return metadata.ContentLength === expectedByteSize && metadata.ChecksumSHA256 === expectedChecksumBase64;
 }
 
+export async function privateFileExists(cloudStoragePath: string) {
+  const s3 = createS3Client();
+  const { bucketName } = getBucketConfig();
+  try {
+    await s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: cloudStoragePath }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function getFileUrl(
   cloud_storage_path: string,
   contentType: string,
