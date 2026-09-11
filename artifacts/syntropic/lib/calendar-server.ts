@@ -23,6 +23,40 @@ import { completeInvitationNotifications } from '@/lib/calendar-invitations'
 import { hasGoogleCalendarScopes } from './calendar-scopes.ts'
 import { calendarProviderErrorContract } from './calendar-oauth-server'
 
+export async function persistRefreshedCalendarCredential(
+  connection: { id: string; userId: string; credentialReference: string },
+  token: { accessToken: string; refreshToken?: string; expiresAt: Date },
+  fallbackRefreshToken: string,
+) {
+  return prisma.$transaction(async tx => {
+    const active = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id"
+      FROM "CalendarProviderConnection"
+      WHERE "id" = ${connection.id}
+        AND "userId" = ${connection.userId}
+        AND "provider" = 'google'::"CalendarProvider"
+        AND "credentialReference" = ${connection.credentialReference}
+        AND "status" <> 'disabled'::"CalendarSyncStatus"
+        AND "disconnectedAt" IS NULL
+      FOR UPDATE
+    `
+    if (!active.length) return 0
+    const updated = await tx.account.updateMany({
+      where: {
+        id: connection.credentialReference,
+        userId: connection.userId,
+        provider: 'google',
+      },
+      data: {
+        access_token: token.accessToken,
+        refresh_token: token.refreshToken ?? fallbackRefreshToken,
+        expires_at: Math.floor(token.expiresAt.getTime() / 1000),
+      },
+    })
+    return updated.count
+  })
+}
+
 /** Database-only credential resolver. Do not import from client code. */
 export async function providerForConnection(connectionId: string): Promise<CalendarProvider | null> {
   const connection = await prisma.calendarProviderConnection.findUnique({ where: { id: connectionId } })
@@ -30,6 +64,7 @@ export async function providerForConnection(connectionId: string): Promise<Calen
   if (!connection.credentialReference) return null
   const account = await prisma.account.findFirst({ where: { id: connection.credentialReference, userId: connection.userId, provider: 'google' } })
   if (!account?.access_token || !account.refresh_token || !hasGoogleCalendarScopes(account.scope)) return null
+  const refreshToken = account.refresh_token
   const clientId = process.env.GOOGLE_CLIENT_ID
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET
   if (!clientId || !clientSecret) return null // safe offline/disconnected degradation
@@ -37,10 +72,11 @@ export async function providerForConnection(connectionId: string): Promise<Calen
     accessToken: account.access_token, refreshToken: account.refresh_token,
     expiresAt: account.expires_at ? new Date(account.expires_at * 1000) : null, clientId, clientSecret,
     onTokenRefresh: async token => {
-      await prisma.account.update({ where: { id: account.id }, data: {
-        access_token: token.accessToken, refresh_token: token.refreshToken ?? account.refresh_token,
-        expires_at: Math.floor(token.expiresAt.getTime() / 1000),
-      } })
+      await persistRefreshedCalendarCredential(
+        { id: connection.id, userId: connection.userId, credentialReference: account.id },
+        token,
+        refreshToken,
+      )
     },
   })
 }
@@ -51,22 +87,30 @@ export async function disableCalendarConnectionLocally(
   lastSyncError: string | null,
 ) {
   const completedAt = new Date()
-  await prisma.$transaction([
-    ...(connection.credentialReference ? [
-      prisma.account.updateMany({
-        where: { id: connection.credentialReference, userId: connection.userId, provider: 'google' },
+  await prisma.$transaction(async tx => {
+    const [locked] = await tx.$queryRaw<Array<{ credentialReference: string | null }>>`
+      SELECT "credentialReference"
+      FROM "CalendarProviderConnection"
+      WHERE "id" = ${connection.id}
+        AND "userId" = ${connection.userId}
+      FOR UPDATE
+    `
+    if (!locked) return
+    if (locked.credentialReference) {
+      await tx.account.updateMany({
+        where: { id: locked.credentialReference, userId: connection.userId, provider: 'google' },
         data: { access_token: null, refresh_token: null, expires_at: null },
-      }),
-    ] : []),
-    prisma.calendarProviderConnection.update({
+      })
+    }
+    await tx.calendarProviderConnection.update({
       where: { id: connection.id },
       data: { status: 'disabled', disconnectedAt: completedAt, credentialReference: null, lastSyncError },
-    }),
-    prisma.calendarSyncJob.updateMany({
+    })
+    await tx.calendarSyncJob.updateMany({
       where: { connectionId: connection.id, status: { in: ['queued', 'failed', 'running'] } },
       data: { status: 'cancelled', completedAt, error: reason },
-    }),
-  ])
+    })
+  })
 }
 
 /** Durable, de-duplicated sync work. A worker may consume queued jobs later. */
