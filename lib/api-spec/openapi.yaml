@@ -91,6 +91,13 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "409": { $ref: "#/components/responses/Conflict" }
+  /mobile/medication-history:
+    get:
+      operationId: getMobileMedicationHistory
+      tags: [mobile]
+      responses:
+        "200": { description: Medication dose history, content: { application/json: { schema: { $ref: "#/components/schemas/MobileMedicationHistory" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /mobile/events:
     post:
       operationId: createMobileEvent
@@ -124,7 +131,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
+        "409": { $ref: "#/components/responses/MobileRestoreConflict" }
   /mobile/sync/pull:
     get:
       operationId: pullMobileSync
@@ -343,6 +350,14 @@ components:
     Unauthorized: { description: Authentication required, content: { application/json: { schema: { $ref: "#/components/schemas/ApiError" } } } }
     NotFound: { description: Resource not found, content: { application/json: { schema: { $ref: "#/components/schemas/ApiError" } } } }
     Conflict: { description: Idempotency or version conflict, content: { application/json: { schema: { $ref: "#/components/schemas/ApiConflict" } } } }
+    MobileRestoreConflict:
+      description: Restore version conflict or an unavailable legacy capture payload
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - { $ref: "#/components/schemas/ApiConflict" }
+              - { $ref: "#/components/schemas/MobileRestoreUnavailableError" }
   schemas:
     HealthStatus:
       type: object
@@ -372,6 +387,18 @@ components:
                 kind: { type: string, enum: [idempotency_key_reused, version_mismatch] }
                 serverVersion: { type: [integer, "null"] }
                 serverRecord: { type: [object, "null"], additionalProperties: true }
+    MobileRestoreUnavailableError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, requestId]
+          properties:
+            code: { type: string, enum: [restore_unavailable] }
+            message: { type: string }
+            requestId: { type: string }
+            details: {}
     MobileDeviceSessionInput:
       type: object
       required: [email, password, installId, platform, deviceName]
@@ -441,6 +468,24 @@ components:
         status: { type: string, enum: [taken, skipped] }
         dose: { type: string }
         reason: { type: string }
+    MobileMedicationHistoryEntry:
+      type: object
+      required: [id, medicationId, medicationLabel, scheduleId, takenAt, dose, status, skipReason, kind]
+      properties:
+        id: { type: string, format: uuid }
+        medicationId: { type: string, format: uuid }
+        medicationLabel: { type: string }
+        scheduleId: { type: [string, "null"], format: uuid }
+        takenAt: { type: string, format: date-time }
+        dose: { type: [string, "null"] }
+        status: { type: string, enum: [taken, skipped] }
+        skipReason: { type: [string, "null"] }
+        kind: { type: string, enum: [scheduled, unscheduled] }
+    MobileMedicationHistory:
+      type: object
+      required: [entries]
+      properties:
+        entries: { type: array, items: { $ref: "#/components/schemas/MobileMedicationHistoryEntry" } }
     MobileEventInput:
       type: object
       required: [clientId, title, startsAt]
