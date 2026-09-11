@@ -38,14 +38,16 @@ export async function validateAppointmentCareOwnership(userId: string, ids: {
   const offeringPromise = ids.offeringId
     ? prisma.appointmentOffering.findFirst({ where: { id: ids.offeringId, userId }, select: { id: true, practiceId: true } })
     : Promise.resolve(null)
-  checks.push(practitionerPromise, practicePromise, offeringPromise)
+  if (ids.practitionerId) checks.push(practitionerPromise)
+  if (ids.practiceId) checks.push(practicePromise)
+  if (ids.offeringId) checks.push(offeringPromise)
   if (ids.symptomId) checks.push(prisma.symptom.findFirst({ where: { id: ids.symptomId, userId }, select: { id: true } }))
   if (ids.appointmentId) checks.push(prisma.appointment.findFirst({ where: { id: ids.appointmentId, userId }, select: { id: true } }))
   if (ids.referralId) checks.push(prisma.referral.findFirst({ where: { id: ids.referralId, userId }, select: { id: true } }))
   if (ids.supersedesId) checks.push(prisma.appointmentOutcome.findFirst({ where: { id: ids.supersedesId, userId }, select: { id: true } }))
   const results = await Promise.all(checks)
   if (results.some((result) => !result)) throw new Error('Referenced care record does not belong to this account')
-  const [practitioner, , offering] = await Promise.all([practitionerPromise, practicePromise, offeringPromise])
+  const [practitioner, offering] = await Promise.all([practitionerPromise, offeringPromise])
   if (ids.practiceId && practitioner && practitioner.organisationId && practitioner.organisationId !== ids.practiceId) {
     throw new Error('Practitioner does not belong to the selected practice')
   }
