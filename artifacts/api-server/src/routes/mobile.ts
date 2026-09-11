@@ -355,6 +355,7 @@ type MobileStockTransactionRow = {
   balanceAfter: number;
   createdAt: Date;
   notes: string | null;
+  auditKind: "reconciliation" | "mismatch_resolution" | null;
 };
 
 type MobileStockDiagnostic = {
@@ -368,7 +369,6 @@ type MobileStockDiagnostic = {
 
 const mobileStockRetryDelaysMs = [5, 10, 20, 40, 80, 160, 320] as const;
 const stockQuantitiesDiffer = (left: number, right: number) => Math.abs(left - right) > 0.0000001;
-const historicalReconciliationNotePrefix = "Historical stock reconciliation:";
 
 async function listMobileStockLevels(executor: any, userId: string) {
   const levelResult = await executor.execute(sql`
@@ -396,7 +396,8 @@ async function listMobileStockLevels(executor: any, userId: string) {
       st."quantityChange",
       st."balanceAfter",
       st."createdAt",
-      st."notes"
+      st."notes",
+      st."auditKind"
     FROM "StockTransaction" st
     WHERE st."userId" = ${userId}
     ORDER BY st."createdAt" ASC, st."id" ASC
@@ -409,7 +410,9 @@ async function listMobileStockLevels(executor: any, userId: string) {
   }
   return levelResult.rows.map((level) => {
     const entries = entriesByMedication.get(level.medicationId) ?? [];
-    const operationalEntries = entries.filter((entry) => !entry.notes?.startsWith(historicalReconciliationNotePrefix));
+    const operationalEntries = entries.filter(
+      (entry) => entry.auditKind !== "reconciliation" && entry.auditKind !== "mismatch_resolution",
+    );
     const currentQuantity = Number(level.currentQuantity);
     const ledgerQuantity = operationalEntries.reduce((balance, entry) => balance + Number(entry.quantityChange), 0);
     const lastLedgerBalance = operationalEntries.length ? Number(operationalEntries[operationalEntries.length - 1]!.balanceAfter) : null;
@@ -494,10 +497,10 @@ router.post("/mobile/stock-levels", async (req: AuthedRequest, res): Promise<voi
     const notes = `Historical stock reconciliation: current stock ${diagnostic.currentQuantity} aligned to ledger balance ${diagnostic.ledgerQuantity}.`;
     await tx.execute(sql`
       INSERT INTO "StockTransaction" (
-        "id", "userId", "medicationId", "type", "quantityChange", "balanceAfter", "notes"
+        "id", "userId", "medicationId", "type", "quantityChange", "balanceAfter", "notes", "auditKind"
       ) VALUES (
         ${transactionId}, ${identity.userId}, ${existing.medicationId}, 'adjustment',
-        ${diagnostic.mismatchQuantity}, ${diagnostic.ledgerQuantity}, ${notes}
+        ${diagnostic.mismatchQuantity}, ${diagnostic.ledgerQuantity}, ${notes}, 'reconciliation'
       )
     `);
     return {
@@ -663,6 +666,45 @@ for (const route of captureRoutes) {
     }
   });
 }
+
+router.get("/mobile/medication-history", async (req: AuthedRequest, res): Promise<void> => {
+  const userId = auth(req).userId;
+  const rows = await db.execute(sql`
+    SELECT
+      ml."id",
+      ml."medicationId",
+      CONCAT(
+        m."name",
+        CASE WHEN m."strength" IS NULL THEN '' ELSE ' ' || m."strength" END,
+        CASE WHEN m."unit" IS NULL THEN '' ELSE ' ' || m."unit" END
+      ) AS "medicationLabel",
+      ml."scheduleId",
+      ml."takenAt",
+      ml."doseTaken" AS "dose",
+      ml."skipped",
+      ml."skipReason",
+      CASE WHEN ml."scheduleId" IS NULL THEN 'unscheduled' ELSE 'scheduled' END AS "kind"
+    FROM "MedicationLog" ml
+    INNER JOIN "Medication" m
+      ON m."id" = ml."medicationId" AND m."userId" = ${userId}
+    WHERE ml."userId" = ${userId}
+    ORDER BY ml."takenAt" DESC, ml."id" DESC
+    LIMIT 100
+  `);
+  res.json({
+    entries: rows.rows.map((row) => ({
+      id: row.id,
+      medicationId: row.medicationId,
+      medicationLabel: row.medicationLabel,
+      scheduleId: row.scheduleId,
+      takenAt: row.takenAt instanceof Date ? row.takenAt.toISOString() : String(row.takenAt),
+      dose: row.dose ?? null,
+      status: row.skipped ? "skipped" : "taken",
+      skipReason: row.skipReason ?? null,
+      kind: row.kind,
+    })),
+  });
+});
 
 router.post("/mobile/sync/push", async (req: AuthedRequest, res): Promise<void> => {
   const parsed = PushMobileSyncBody.safeParse(req.body);
@@ -849,6 +891,18 @@ router.post("/mobile/sync/restore", async (req: AuthedRequest, res): Promise<voi
       if (!record) {
         throw new MobileCanonicalError("not_found", "Deleted mobile capture was not found", 404);
       }
+      // The row lock serializes competing restores. Once the first request
+      // commits, later requests should observe the active record and return a
+      // stable no-op rather than report a version conflict for the same
+      // restore intent.
+      if (!record.deletedAt) {
+        return {
+          entityId: record.id,
+          entityType: record.entityType,
+          version: record.version,
+          restored: false,
+        };
+      }
       if (record.version !== parsed.data.expectedVersion) {
         const body = {
           ...errorBody(req, "version_mismatch", "The server record changed since it was reviewed"),
@@ -859,14 +913,6 @@ router.post("/mobile/sync/restore", async (req: AuthedRequest, res): Promise<voi
           },
         };
         throw new MobileCanonicalError("version_mismatch", JSON.stringify(body), 409);
-      }
-      if (!record.deletedAt) {
-        return {
-          entityId: record.id,
-          entityType: record.entityType,
-          version: record.version,
-          restored: false,
-        };
       }
       if (!record.payload || Object.keys(record.payload).length === 0) {
         throw new MobileCanonicalError("restore_unavailable", "This deleted capture no longer has a recoverable payload", 409);
@@ -1420,7 +1466,25 @@ router.post("/mobile/apple-health/import-batches", async (req: AuthedRequest, re
       })
     : [];
   const importedAt = new Date();
-  const [batch] = await db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
+    await tx.execute(sql`
+      SELECT pg_advisory_xact_lock(hashtextextended(
+        ${`${identity.userId}|${identity.deviceId}|${parsed.data.sampleType}`},
+        0
+      ))
+    `);
+    const lockedAnchor = await tx.execute(sql`
+      SELECT "anchor"
+      FROM "AppleHealthAnchor"
+      WHERE "deviceId" = ${identity.deviceId} AND "sampleType" = ${parsed.data.sampleType}
+      FOR UPDATE
+    `);
+    const currentAnchor = (lockedAnchor.rows[0] as { anchor: string } | undefined)?.anchor ?? null;
+    const submittedPreviousAnchor = parsed.data.previousAnchor ?? null;
+    if (currentAnchor !== submittedPreviousAnchor) {
+      return { kind: "stale_anchor" as const, currentAnchor };
+    }
+
     const [created] = await tx.insert(appleHealthImportBatchesTable).values({
       userId: identity.userId, deviceId: identity.deviceId, sampleType: parsed.data.sampleType,
       previousAnchor: parsed.data.previousAnchor, nextAnchor: parsed.data.anchor, requestHash: idem.hash,
@@ -1464,8 +1528,22 @@ router.post("/mobile/apple-health/import-batches", async (req: AuthedRequest, re
       subjectType: "import_batch", subjectId: created.id,
       details: { readOnly: true, accepted: acceptedSamples.length, deletions: parsed.data.deletions.length },
     });
-    return [created];
+    return { kind: "accepted" as const, batch: created };
   });
+  if (result.kind === "stale_anchor") {
+    const body = {
+      ...errorBody(req, "stale_anchor", "The Apple Health anchor changed before this batch was acknowledged"),
+      conflict: {
+        kind: "stale_anchor",
+        serverVersion: null,
+        serverRecord: { sampleType: parsed.data.sampleType, anchor: result.currentAnchor },
+      },
+    };
+    await finishIdempotency(identity.userId, "apple-health.import", idem.key, 409, body);
+    res.status(409).json(body);
+    return;
+  }
+  const batch = result.batch;
   const response = {
     batchId: batch.id, accepted: acceptedSamples.length,
     duplicates: parsed.data.samples.length - acceptedSamples.length,
