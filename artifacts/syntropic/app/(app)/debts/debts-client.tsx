@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Users, Plus, Search, ArrowDownLeft, ArrowUpRight, History, Percent, ExternalLink, RefreshCw } from 'lucide-react'
+import { Users, Plus, Search, ArrowDownLeft, ArrowUpRight, History, Percent, ExternalLink, RefreshCw, Upload, FileText } from 'lucide-react'
 import { SafeDate, SafeNumber } from '@/components/safe-format'
 import { FadeIn } from '@/components/ui/animate'
 import { toast } from 'sonner'
@@ -28,6 +28,7 @@ export function DebtsClient() {
   const [selected, setSelected] = useState<Debt | null>(null); const [detail, setDetail] = useState<any>(null); const [movementOpen, setMovementOpen] = useState(false)
   const [movement, setMovement] = useState({ type: 'repayment', amount: '', effectiveAt: '', note: '', transactionId: '' })
   const [interestOpen, setInterestOpen] = useState(false); const [throughDate, setThroughDate] = useState(''); const [preview, setPreview] = useState<any>(null)
+  const [uploadingReceipt, setUploadingReceipt] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true); setError('')
@@ -46,8 +47,58 @@ export function DebtsClient() {
   }
   const previewInterest = async () => { if (!selected || !throughDate) return; try { const r = await fetch(`/api/debts/${selected.id}/interest/preview`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ throughDate }) }); if (!r.ok) throw new Error(await errorText(r)); setPreview(await r.json()) } catch (e: any) { toast.error(e.message ?? 'Unable to preview interest') } }
   const confirmInterest = async () => { if (!selected || !preview?.previewToken) return; setSaving(true); try { const r = await fetch(`/api/debts/${selected.id}/interest/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ previewToken: preview.previewToken }) }); if (!r.ok) throw new Error(await errorText(r)); toast.success('Interest confirmed'); setInterestOpen(false); setPreview(null); await load(); await openDetail(selected) } catch (e: any) { toast.error(e.message ?? 'Unable to confirm interest') } finally { setSaving(false) } }
+  const openReceipt = async (movementId: string) => {
+    const popup = window.open('', '_blank', 'noopener,noreferrer')
+    try {
+      const r = await fetch(`/api/debts/${selected?.id}/receipts/${movementId}`)
+      if (!r.ok) throw new Error(await errorText(r))
+      const data = await r.json()
+      if (!data.url) throw new Error('Receipt is no longer available')
+      if (popup) popup.location.href = data.url
+      else window.open(data.url, '_blank', 'noopener,noreferrer')
+    } catch (e: any) {
+      popup?.close()
+      toast.error(e.message ?? 'Receipt is no longer available')
+    }
+  }
+  const uploadReceipt = async (movementId: string, file: File) => {
+    if (!selected) return
+    const allowedTypes = ['application/pdf', 'image/png', 'image/jpeg', 'image/webp']
+    if (!allowedTypes.includes(file.type)) {
+      toast.error('Choose a PDF, PNG, JPEG, or WebP receipt')
+      return
+    }
+    setUploadingReceipt(movementId)
+    try {
+      const bytes = await file.arrayBuffer()
+      const digest = await crypto.subtle.digest('SHA-256', bytes)
+      const sha256 = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+      const prepare = await fetch('/api/upload/presigned', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileName: file.name, contentType: file.type, byteSize: file.size, sha256, isPublic: false }),
+      })
+      if (!prepare.ok) throw new Error(await errorText(prepare))
+      const upload = await prepare.json()
+      const put = await fetch(upload.uploadUrl, { method: 'PUT', headers: upload.uploadHeaders, body: file })
+      if (!put.ok) throw new Error('Private receipt upload failed')
+      const attach = await fetch(`/api/debts/${selected.id}/receipts/${movementId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uploadId: upload.uploadId }),
+      })
+      if (!attach.ok) throw new Error(await errorText(attach))
+      toast.success('Receipt attached privately')
+      await openDetail(selected)
+    } catch (e: any) {
+      toast.error(e.message ?? 'Unable to attach receipt')
+    } finally {
+      setUploadingReceipt(null)
+    }
+  }
   const person = (d: Debt) => d.person ?? people.find(p => p.id === d.personId)
   const household = (d: Debt) => d.household ?? households.find(h => h.id === d.householdId)
+  const movementTransaction = (m: Movement) => m.transaction ?? m.householdExpense?.linkedTransaction
 
   return <div className="space-y-6">
     <FadeIn><div className="flex items-center justify-between flex-wrap gap-4"><div><h1 className="font-display text-2xl font-bold tracking-tight flex items-center gap-2"><Users className="h-6 w-6" /> Shared debts</h1><p className="text-muted-foreground text-sm mt-1">A clear record of money shared with people and households.</p></div><Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4 mr-2" /> Add shared debt</Button></div></FadeIn>
@@ -86,7 +137,7 @@ export function DebtsClient() {
                     <div className="space-y-2">{detail.movements.map((m: Movement) => (
                       <div key={m.id} className="flex justify-between gap-3 border-b pb-2 text-sm">
                          <div><Badge variant="outline" className="mr-2 capitalize">{m.type}</Badge>{m.note ?? ''}
-                           <p className="text-xs text-muted-foreground mt-1"><SafeDate date={m.effectiveAt} options={{ dateStyle: 'medium' }} />{(m.transaction?.id || m.householdExpense?.linkedTransaction?.id) && <a className="text-primary ml-2" href={`/api/debts/${selected.id}/receipts/${m.id}`} target="_blank" rel="noreferrer">Receipt/source <ExternalLink className="inline h-3 w-3" /></a>}{m.householdSettlement?.id && <span className="ml-2 text-muted-foreground">Household settlement linked</span>}</p>
+                            <p className="text-xs text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 gap-y-1"><SafeDate date={m.effectiveAt} options={{ dateStyle: 'medium' }} />{movementTransaction(m)?.receiptPath && <button type="button" className="text-primary hover:underline inline-flex items-center gap-1" onClick={() => void openReceipt(m.id)}>View receipt <ExternalLink className="h-3 w-3" /></button>}{movementTransaction(m) && !movementTransaction(m)?.receiptPath && <><label htmlFor={`receipt-${m.id}`} className="text-primary hover:underline cursor-pointer inline-flex items-center gap-1"><Upload className="h-3 w-3" />{uploadingReceipt === m.id ? 'Uploading…' : 'Upload receipt'}</label><input id={`receipt-${m.id}`} type="file" accept="application/pdf,image/png,image/jpeg,image/webp" className="sr-only" disabled={uploadingReceipt !== null} onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void uploadReceipt(m.id, file) }} /></>}{!movementTransaction(m) && <span className="text-muted-foreground inline-flex items-center gap-1"><FileText className="h-3 w-3" /> No linked transaction</span>}{m.householdSettlement?.id && <span className="ml-2 text-muted-foreground">Household settlement linked</span>}</p>
                         </div>
                         <span className="font-mono"><SafeNumber value={m.amount} currency={selected.currency} /></span>
                       </div>
