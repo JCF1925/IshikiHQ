@@ -70,6 +70,8 @@ type ActiveStorageLabelsResponse = {
   labels: ActiveStorageLabel[];
 };
 
+const ACTIVE_LABELS_REFRESH_INTERVAL_MS = 30_000;
+
 export function useStorage(householdId?: string, query: string = '') {
   const url = householdId 
     ? `/api/households/${householdId}/storage${query ? `?q=${encodeURIComponent(query)}` : ''}` 
@@ -81,8 +83,12 @@ export function useStorage(householdId?: string, query: string = '') {
     data: labelsData,
     error: labelsError,
     isLoading: isLoadingLabels,
+    isValidating: isValidatingLabels,
     mutate: mutateLabels,
-  } = useSWR<ActiveStorageLabelsResponse>(labelsUrl, fetcher);
+  } = useSWR<ActiveStorageLabelsResponse>(labelsUrl, fetcher, {
+    revalidateOnFocus: true,
+    refreshInterval: ACTIVE_LABELS_REFRESH_INTERVAL_MS,
+  });
 
   const addResource = useCallback(async (resourceType: string, payload: any) => {
     if (!householdId) return;
@@ -152,11 +158,12 @@ export function useStorage(householdId?: string, query: string = '') {
     });
     await requireSuccess(res);
     const result = await res.json();
+    await mutateLabels();
     return result.labels.map((label: Omit<GeneratedStorageLabel, 'url'>) => ({
       ...label,
       url: new URL(label.path, window.location.origin).toString(),
     })) as GeneratedStorageLabel[];
-  }, [householdId]);
+  }, [householdId, mutateLabels]);
 
   const reprintLabel = useCallback(async (referenceId: string) => {
     if (!householdId) throw new Error('No household selected')
@@ -199,7 +206,9 @@ export function useStorage(householdId?: string, query: string = '') {
     generateQR,
     generateLabels,
     activeLabels: labelsData?.labels || [],
+    hasLoadedLabels: labelsData !== undefined,
     isLoadingLabels,
+    isValidatingLabels,
     labelsError,
     reprintLabel,
     revokeLabel,
