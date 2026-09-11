@@ -88,23 +88,36 @@ function renderScannedStatement(
   return execFileSync('magick', args, { input: svg })
 }
 
-function buildImageOnlyPdf(image: Buffer, width: number, height: number) {
-  const pageWidth = 792
-  const pageHeight = Math.round(pageWidth * height / width)
-  const imageObject = Buffer.concat([
-    Buffer.from(`<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode /Length ${image.length} >>\nstream\n`, 'ascii'),
-    image,
-    Buffer.from('\nendstream', 'ascii'),
-  ])
-  const content = `q ${pageWidth} 0 0 ${pageHeight} 0 0 cm /Im0 Do Q`
+type ImageOnlyPdfPage = {
+  image: Buffer
+  width: number
+  height: number
+}
+
+function buildImageOnlyPdf(pages: ImageOnlyPdfPage | ImageOnlyPdfPage[]) {
+  const pageList = Array.isArray(pages) ? pages : [pages]
+  const pageObjectIds = pageList.map((_, index) => 3 + index * 3)
   const objects = [
     pdfObject(1, '<< /Type /Catalog /Pages 2 0 R >>'),
-    pdfObject(2, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>'),
-    pdfObject(3, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>`),
-    pdfObject(4, imageObject),
-    pdfObject(5, Buffer.concat([
-      Buffer.from(`<< /Length ${content.length} >>\nstream\n${content}\nendstream`, 'ascii'),
-    ])),
+    pdfObject(2, `<< /Type /Pages /Kids [${pageObjectIds.map((id) => `${id} 0 R`).join(' ')}] /Count ${pageList.length} >>`),
+    ...pageList.flatMap(({ image, width, height }, index) => {
+      const pageWidth = 792
+      const pageHeight = Math.round(pageWidth * height / width)
+      const pageObjectId = pageObjectIds[index]
+      const imageObjectId = pageObjectId + 1
+      const contentObjectId = pageObjectId + 2
+      const imageObject = Buffer.concat([
+        Buffer.from(`<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode /Length ${image.length} >>\nstream\n`, 'ascii'),
+        image,
+        Buffer.from('\nendstream', 'ascii'),
+      ])
+      const content = `q ${pageWidth} 0 0 ${pageHeight} 0 0 cm /Im0 Do Q`
+      return [
+        pdfObject(pageObjectId, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /XObject << /Im0 ${imageObjectId} 0 R >> >> /Contents ${contentObjectId} 0 R >>`),
+        pdfObject(imageObjectId, imageObject),
+        pdfObject(contentObjectId, Buffer.from(`<< /Length ${content.length} >>\nstream\n${content}\nendstream`, 'ascii')),
+      ]
+    }),
   ]
   const header = Buffer.from('%PDF-1.7\n%\xE2\xE3\xCF\xD3\n', 'latin1')
   const offsets: number[] = []
@@ -145,13 +158,17 @@ export function imageOnlyMedicareStatementPdf() {
   return buildPdf('')
 }
 
+function renderedPage(image: Buffer, width = 2200, height = 900): ImageOnlyPdfPage {
+  return { image, width, height }
+}
+
 export function wideScannedMedicareStatementPdf() {
   const headers = ['DATE OF SERVICE', 'ITEM NUMBER', 'SERVICE', 'PROVIDER', 'SCHEDULE FEE', 'PATIENT FEE', 'MEDICARE BENEFIT']
   const image = renderScannedStatement('MEDICARE CLAIMS STATEMENT', headers, [
     { y: 230, values: ['08/09/2026', '24', 'OPTOMETRY', 'NORTH CLINIC', '$80.00', '$80.00', '$30.00'] },
     { y: 300, values: ['09/09/2026', '36', 'DENTAL EXAM', 'SOUTH CLINIC', '$120.00', '$120.00', '$50.00'] },
   ])
-  return buildImageOnlyPdf(image, 2200, 900)
+  return buildImageOnlyPdf(renderedPage(image))
 }
 
 export function compactScannedMedicareStatementPdf() {
@@ -160,7 +177,7 @@ export function compactScannedMedicareStatementPdf() {
     { y: 230, values: ['10/09/2026', 'EAST CLINIC', '44', 'PHYSIO REVIEW', '$200.00', '$100.00'] },
     { y: 300, values: ['11/09/2026', 'WEST CLINIC', '55', 'EYE TEST', '$90.00', '$35.00'] },
   ])
-  return buildImageOnlyPdf(image, 2200, 900)
+  return buildImageOnlyPdf(renderedPage(image))
 }
 
 export function lowQualityScannedMedicareStatementPdf() {
@@ -169,5 +186,35 @@ export function lowQualityScannedMedicareStatementPdf() {
     { y: 230, values: ['12/09/2026', 'GP VISIT', 'LOW CARE', '3', '$40.00'] },
     { y: 300, values: ['13/09/2026', 'PATHOLOGY', 'LOW CARE', '7', '$18.00'] },
   ], { lowQuality: true })
-  return buildImageOnlyPdf(image, 2200, 900)
+  return buildImageOnlyPdf(renderedPage(image))
+}
+
+export function multiPageScannedMedicareStatementPdf(pageCount = 2) {
+  const pages: ImageOnlyPdfPage[] = [
+    renderedPage(renderScannedStatement('MEDICARE CLAIMS STATEMENT', [
+      'DATE OF SERVICE',
+      'ITEM NUMBER',
+      'SERVICE',
+      'PROVIDER',
+      'SCHEDULE FEE',
+      'PATIENT FEE',
+      'MEDICARE BENEFIT',
+    ], [
+      { y: 230, values: ['08/09/2026', '24', 'OPTOMETRY', 'NORTH CLINIC', '$80.00', '$80.00', '$30.00'] },
+      { y: 300, values: ['09/09/2026', '36', 'DENTAL EXAM', 'SOUTH CLINIC', '$120.00', '$120.00', '$50.00'] },
+    ])),
+    renderedPage(renderScannedStatement('MEDICARE BENEFIT DETAIL', [
+      'DATE',
+      'PROVIDER',
+      'ITEM',
+      'DESCRIPTION',
+      'AMOUNT CHARGED',
+      'BENEFIT',
+    ], [
+      { y: 230, values: ['10/09/2026', 'EAST CLINIC', '44', 'PHYSIO REVIEW', '$200.00', '$100.00'] },
+      { y: 300, values: ['11/09/2026', 'WEST CLINIC', '55', 'EYE TEST', '$90.00', '$35.00'] },
+    ])),
+  ]
+  const repeatedPage = pages[pages.length - 1]
+  return buildImageOnlyPdf(Array.from({ length: pageCount }, (_, index) => pages[index] ?? repeatedPage))
 }
