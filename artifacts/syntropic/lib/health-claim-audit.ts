@@ -14,6 +14,7 @@ export const HEALTH_IMPORT_AUDIT_FIELD_LABELS = {
   financialYear: 'Financial year',
   isForecast: 'Forecast',
   countsToSafetyNet: 'Safety net',
+  appointmentId: 'Linked appointment',
   claimNumber: 'Claim number',
   serviceType: 'Service type',
   chargedAmount: 'Charged amount',
