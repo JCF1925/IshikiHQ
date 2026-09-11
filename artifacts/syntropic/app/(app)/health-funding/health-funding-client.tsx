@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef } from 'react'
+import Link from 'next/link'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -22,13 +23,18 @@ import { MEDICARE_REVIEW_FIELDS, PRIVATE_HEALTH_REVIEW_FIELDS } from '@/lib/heal
 type Claim = {
   id: string; serviceDate: string; description: string; itemNumber: string | null; provider: string | null
   feeCharged: number | null; benefitPaid: number | null; outOfPocket: number | null; isForecast: boolean; countsToSafetyNet: boolean
+  appointmentId: string | null
+  appointment: { id: string; title: string; startTime: string; practitioner: { id: string; name: string; referralRequired: boolean } | null } | null
+  linkedPractitioner: { id: string; name: string; referralRequired: boolean } | null
+  linkedServiceDate: string | null
   referralStatus?: string; referralStatusMessage?: string | null; referralRequired?: boolean
 }
 type Progress = {
   year: number; gapTotal: number; outOfPocketTotal: number; omsnThreshold: number; emsnThreshold: number
   omsnMet: boolean; emsnMet: boolean; omsnRemaining: number; emsnRemaining: number; omsnPct: number; emsnPct: number
 }
-type ClaimsResp = { claims: Claim[]; year: number; progress: Progress; progressWithForecast: Progress; forecastOop: number }
+type Appointment = { id: string; title: string; startTime: string; status: string; practitioner: { id: string; name: string; referralRequired: boolean } | null; referral: { id: string } | null }
+type ClaimsResp = { claims: Claim[]; appointments: Appointment[]; year: number; progress: Progress; progressWithForecast: Progress; forecastOop: number }
 
 type Limit = { id: string; category: string; annualLimit: number | null; usedAmount: number; notes: string | null }
 type PhiTxn = { id: string; policyId: string; date: string; type: string; amount: number; description: string | null }
@@ -53,8 +59,10 @@ type HealthImportAuditEvent = {
   createdAt: string
 }
 type HealthImport = {
-  id: string; kind: ImportKind; fileName: string; contentType: string; byteSize: number; sha256: string; status: string
-  detectedFields: string[]; parseErrors: string[]; rows: ImportRow[]; auditEvents?: HealthImportAuditEvent[]
+  id: string; kind: ImportKind; fileName?: string; contentType?: string; byteSize?: number; sha256?: string; status: string
+  detectedFields?: string[]; parseErrors?: string[]; rows?: ImportRow[]; auditEvents?: HealthImportAuditEvent[]
+  confirmedAt?: string | null; canceledAt?: string | null; deletedAt?: string | null
+  createdAt?: string; updatedAt?: string; removalReason?: 'source_removed' | 'review_canceled'
 }
 type HealthImportSummary = Omit<HealthImport, 'rows'> & { _count?: { rows: number }; createdAt?: string; deletedAt?: string | null }
 function rejectedImportRecoveryAdvice(parseErrors: string[] | undefined): string {
@@ -88,12 +96,15 @@ const healthImportAuditLabel = (action: string) => ({
   source_removed: 'Source removed',
 }[action] ?? 'Review activity')
 const healthImportAuditDate = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
+const healthImportRemovalDate = (value: string | null | undefined) => value
+  ? healthImportAuditDate(value)
+  : 'an unknown date'
 type Org = { id: string; name: string }
 
 const nowYear = () => new Date().getUTCFullYear()
 const todayStr = () => new Date().toISOString().slice(0, 10)
 
-const emptyClaim = { serviceDate: '', description: '', itemNumber: '', provider: '', feeCharged: '', benefitPaid: '', outOfPocket: '', isForecast: false, countsToSafetyNet: true }
+const emptyClaim = { serviceDate: '', description: '', itemNumber: '', provider: '', feeCharged: '', benefitPaid: '', outOfPocket: '', appointmentId: '', isForecast: false, countsToSafetyNet: true }
 const emptyLimit = () => ({ category: '', annualLimit: '', usedAmount: '', notes: '' })
 const emptyPolicy = { insurerId: 'none', policyName: '', policyNumber: '', coverType: 'combined', premium: '', premiumFrequency: 'monthly', excess: '', startDate: '', notes: '' }
 const emptyPhiTxn = () => ({ type: 'benefit', amount: '', date: new Date().toISOString().slice(0, 10), description: '' })
@@ -220,7 +231,7 @@ export function HealthFundingClient() {
     setSavingClaim(true)
     const res = await fetch('/api/medicare-claims', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(claimForm) })
     setSavingClaim(false)
-    if (res.ok) { toast.success('Claim added'); setClaimOpen(false); fetchClaims() } else toast.error('Failed to save')
+    if (res.ok) { toast.success('Claim added'); setClaimOpen(false); fetchClaims() } else toast.error(await importError(res))
   }
 
   const deleteClaim = async (id: string) => {
@@ -278,7 +289,11 @@ export function HealthFundingClient() {
     setHealthImport(record)
     setImportRows(record.rows ?? [])
     setImportPolicyId('none')
-    setImportMessage(record.status === 'review' ? 'Review each row before confirming.' : 'This import has already been confirmed.')
+    setImportMessage(record.deletedAt
+      ? ''
+      : record.status === 'review'
+        ? 'Review each row before confirming.'
+        : 'This import has already been confirmed.')
     setImportOpen(true)
   }
 
@@ -320,7 +335,7 @@ export function HealthFundingClient() {
   }
 
   const updateImportRow = (id: string, field: string, value: string) => {
-    setImportRows((rows) => rows.map((row) => row.id === id ? { ...row, data: { ...row.data, [field]: value } } : row))
+    setImportRows((rows) => rows.map((row) => row.id === id ? { ...row, data: { ...row.data, [field]: value === 'none' ? null : value } } : row))
   }
 
   const saveImportRows = async () => {
@@ -442,6 +457,9 @@ export function HealthFundingClient() {
         <h1 className="font-display text-2xl font-bold tracking-tight flex items-center gap-2">
           <ShieldPlus className="h-6 w-6 text-primary" /> Health Funding
         </h1>
+        <Button asChild variant="outline" size="sm">
+          <Link href="/health-funding/summary"><FileCheck2 className="h-4 w-4" /> View summary report</Link>
+        </Button>
       </div>
       <HealthDisclaimer />
       {healthImportsLoadError ? (
@@ -463,8 +481,17 @@ export function HealthFundingClient() {
             {healthImports.slice(0, 8).map((source) => (
               <div key={source.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border/60 p-2 text-sm">
                 <button type="button" className="min-w-0 text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => void openExistingImport(source.id)}>
-                  <span className="font-medium">{source.kind === 'medicare' ? 'Medicare' : 'Private health'} · {source.fileName}</span>
-                  <span className="block text-xs text-muted-foreground">{source._count?.rows ?? 0} rows · {source.status}{source.deletedAt ? ' · source removed' : ''}</span>
+                  {source.deletedAt ? (
+                    <>
+                      <span className="font-medium">{source.kind === 'medicare' ? 'Medicare' : 'Private health'} source removed</span>
+                      <span className="block text-xs text-muted-foreground">Removed {healthImportRemovalDate(source.deletedAt)} · no longer included in reports</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="font-medium">{source.kind === 'medicare' ? 'Medicare' : 'Private health'} · {source.fileName}</span>
+                      <span className="block text-xs text-muted-foreground">{source._count?.rows ?? 0} rows · {source.status}</span>
+                    </>
+                  )}
                 </button>
                 {!source.deletedAt && <Button size="sm" variant="ghost" onClick={() => void removeImportSource(source.id)}>Remove source</Button>}
               </div>
@@ -551,7 +578,9 @@ export function HealthFundingClient() {
                           )}
                         </div>
                         <div className="text-xs text-muted-foreground mt-0.5">
-                          <SafeDate date={c.serviceDate} options={{ dateStyle: 'medium' }} />{c.provider ? ` · ${c.provider}` : ''}
+                           <SafeDate date={c.serviceDate} options={{ dateStyle: 'medium' }} />{c.appointment
+                             ? ` · Appointment: ${c.appointment.title} (${new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(c.appointment.startTime))})${c.linkedPractitioner ? ` · ${c.linkedPractitioner.name}` : ''}`
+                             : c.provider ? ` · ${c.provider}` : ''}
                         </div>
                          {c.referralRequired && c.referralStatusMessage && c.referralStatus !== 'valid' && (
                            <p className="text-xs text-amber-400 mt-1">{c.referralStatusMessage} Imported claim amounts are kept as recorded.</p>
@@ -678,6 +707,21 @@ export function HealthFundingClient() {
             <div><Label>Service date</Label><Input type="date" value={claimForm.serviceDate} onChange={(e) => setClaimForm({ ...claimForm, serviceDate: e.target.value })} /></div>
             <div><Label>Item number</Label><Input value={claimForm.itemNumber} onChange={(e) => setClaimForm({ ...claimForm, itemNumber: e.target.value })} /></div>
             <div className="sm:col-span-2"><Label>Provider</Label><Input value={claimForm.provider} onChange={(e) => setClaimForm({ ...claimForm, provider: e.target.value })} /></div>
+            <div className="sm:col-span-2">
+              <Label>Linked appointment (optional)</Label>
+              <Select value={claimForm.appointmentId || 'none'} onValueChange={(value) => setClaimForm({ ...claimForm, appointmentId: value === 'none' ? '' : value })}>
+                <SelectTrigger><SelectValue placeholder="Choose an appointment" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No linked appointment</SelectItem>
+                  {(data?.appointments ?? []).map((appointment) => (
+                    <SelectItem key={appointment.id} value={appointment.id}>
+                      {new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(appointment.startTime))} · {appointment.title}{appointment.practitioner ? ` · ${appointment.practitioner.name}` : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="mt-1 text-xs text-muted-foreground">Links this claim to the exact care record for referral checks. Imported amounts stay unchanged.</p>
+            </div>
             <div><Label>Fee charged</Label><Input type="number" step="0.01" value={claimForm.feeCharged} onChange={(e) => setClaimForm({ ...claimForm, feeCharged: e.target.value })} /></div>
             <div><Label>Benefit paid</Label><Input type="number" step="0.01" value={claimForm.benefitPaid} onChange={(e) => setClaimForm({ ...claimForm, benefitPaid: e.target.value })} /></div>
             <div><Label>Out-of-pocket</Label><Input type="number" step="0.01" value={claimForm.outOfPocket} onChange={(e) => setClaimForm({ ...claimForm, outOfPocket: e.target.value })} placeholder="auto if blank" /></div>
@@ -774,10 +818,16 @@ export function HealthFundingClient() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <FileCheck2 className="h-5 w-5 text-primary" />
-              {importKind === 'medicare' ? 'Import Medicare claims' : 'Import private health claims'}
+              {healthImport?.deletedAt
+                ? `${importKind === 'medicare' ? 'Medicare' : 'Private health'} source history`
+                : importKind === 'medicare' ? 'Import Medicare claims' : 'Import private health claims'}
             </DialogTitle>
           </DialogHeader>
-          <p id="health-claim-import-dialog-description" className="sr-only">Import Medicare or private health claims for review before saving.</p>
+          <p id="health-claim-import-dialog-description" className="sr-only">
+            {healthImport?.deletedAt
+              ? 'Lifecycle information for a removed claim source.'
+              : 'Import Medicare or private health claims for review before saving.'}
+          </p>
           {!healthImport ? (
             <div className="space-y-4">
               <div className="rounded-lg border border-border bg-muted/30 p-4 space-y-2">
@@ -803,14 +853,33 @@ export function HealthFundingClient() {
             </div>
           ) : (
             <div className="space-y-4">
-              <div className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-border p-3">
-                <div>
-                  <p className="font-medium">{healthImport.fileName}</p>
-                  <p className="text-xs text-muted-foreground">{healthImport.contentType} · {(healthImport.byteSize / 1024).toFixed(1)} KB · SHA-256 {healthImport.sha256.slice(0, 12)}…</p>
+              {healthImport.deletedAt ? (
+                <div className="rounded-lg border border-border bg-muted/30 p-4 space-y-2" data-testid="health-import-removed-message">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline">Source removed</Badge>
+                    <span className="text-xs text-muted-foreground">{healthImportRemovalDate(healthImport.deletedAt)}</span>
+                  </div>
+                  <p className="text-sm">
+                    This {healthImport.kind === 'medicare' ? 'Medicare' : 'private health'} source was removed and is no longer included in reports.
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {healthImport.status === 'canceled'
+                      ? 'It was canceled before confirmation, so no claims were added from it.'
+                      : 'Confirmed claims remain in your health history.'}
+                  </p>
                 </div>
-                <Badge variant={healthImport.status === 'rejected' ? 'destructive' : 'outline'}>{healthImport.status === 'review' ? 'Review required' : healthImport.status}</Badge>
-              </div>
-              <details className="rounded-lg border border-border/70 bg-muted/10 p-3" data-testid="details-health-claim-audit">
+              ) : (
+                <>
+                  <div className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-border p-3">
+                    <div>
+                      <p className="font-medium">{healthImport.fileName}</p>
+                      <p className="text-xs text-muted-foreground">{healthImport.contentType} · {((healthImport.byteSize ?? 0) / 1024).toFixed(1)} KB · SHA-256 {(healthImport.sha256 ?? '').slice(0, 12)}…</p>
+                    </div>
+                    <Badge variant={healthImport.status === 'rejected' ? 'destructive' : 'outline'}>{healthImport.status === 'review' ? 'Review required' : healthImport.status}</Badge>
+                  </div>
+                </>
+              )}
+              {!healthImport.deletedAt && <details className="rounded-lg border border-border/70 bg-muted/10 p-3" data-testid="details-health-claim-audit">
                 <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" data-testid="button-toggle-health-claim-audit">
                   <History className="h-4 w-4 text-primary" />
                   <span>Private audit history</span>
@@ -836,10 +905,10 @@ export function HealthFundingClient() {
                     ))}
                   </ol>
                 )}
-              </details>
-              {healthImport.detectedFields?.length > 0 && <p className="text-xs text-muted-foreground">Detected fields: {healthImport.detectedFields.join(', ')}</p>}
-              {healthImport.parseErrors?.length > 0 && <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive" role="alert">{healthImport.parseErrors.join(' ')}</div>}
-              {healthImport.kind === 'private_health' && healthImport.status === 'review' && (
+                </details>}
+              {!healthImport.deletedAt && (healthImport.detectedFields?.length ?? 0) > 0 && <p className="text-xs text-muted-foreground">Detected fields: {healthImport.detectedFields?.join(', ')}</p>}
+              {!healthImport.deletedAt && (healthImport.parseErrors?.length ?? 0) > 0 && <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive" role="alert">{healthImport.parseErrors?.join(' ')}</div>}
+              {!healthImport.deletedAt && healthImport.kind === 'private_health' && healthImport.status === 'review' && (
                 <div className="space-y-1">
                   <Label htmlFor="import-policy">Policy for these claims (required)</Label>
                   <Select value={importPolicyId} onValueChange={setImportPolicyId}>
@@ -852,7 +921,7 @@ export function HealthFundingClient() {
                   <p className="text-xs text-muted-foreground">No policy is assigned automatically.</p>
                 </div>
               )}
-              {importRows.length > 0 && (
+              {!healthImport.deletedAt && importRows.length > 0 && (
                 <div className="space-y-2">
                   <p className="text-sm font-medium">Claim rows</p>
                   <div className="space-y-3">
@@ -876,7 +945,7 @@ export function HealthFundingClient() {
                               </Button>
                             </div>
                           </div>
-                          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                             {fields.map(({ field, label, inputType }) => (
                               <div key={field} className={field === 'description' ? 'sm:col-span-2' : ''}>
                                 <Label className={`text-xs ${lowConfidenceFields.has(field) ? 'text-amber-700 dark:text-amber-400' : ''}`}>
@@ -893,6 +962,26 @@ export function HealthFundingClient() {
                                 />
                               </div>
                             ))}
+                            {!privateRow && (
+                              <div className="sm:col-span-2 lg:col-span-4">
+                                <Label className="text-xs">Linked appointment (optional)</Label>
+                                <Select
+                                  value={row.data.appointmentId || 'none'}
+                                  disabled={excluded || row.status === 'duplicate'}
+                                  onValueChange={(value) => updateImportRow(row.id, 'appointmentId', value)}
+                                >
+                                  <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Choose an appointment" /></SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="none">No linked appointment</SelectItem>
+                                    {(data?.appointments ?? []).map((appointment) => (
+                                      <SelectItem key={appointment.id} value={appointment.id}>
+                                        {new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(appointment.startTime))} · {appointment.title}{appointment.practitioner ? ` · ${appointment.practitioner.name}` : ''}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            )}
                           </div>
                           {row.errors?.length > 0 && <ul className="list-disc pl-5 text-xs text-destructive">{row.errors.map((error) => <li key={error}>{error}</li>)}</ul>}
                         </div>
@@ -901,19 +990,21 @@ export function HealthFundingClient() {
                   </div>
                 </div>
               )}
-              {healthImport.status === 'rejected' && (
+              {!healthImport.deletedAt && healthImport.status === 'rejected' && (
                 <div className="rounded-lg border border-border bg-muted/30 p-3" data-testid="health-import-recovery">
                   <p className="text-xs text-muted-foreground">
                     {rejectedImportRecoveryAdvice(healthImport.parseErrors)}
                   </p>
                 </div>
               )}
-              {healthImport.status !== 'rejected' && importMessage && <p className="text-sm text-muted-foreground" role="status">{importMessage}</p>}
+              {!healthImport.deletedAt && healthImport.status !== 'rejected' && importMessage && <p className="text-sm text-muted-foreground" role="status">{importMessage}</p>}
               <DialogFooter>
-                {healthImport.status === 'rejected'
+                {healthImport.deletedAt
+                  ? <Button variant="outline" onClick={() => setImportOpen(false)}>Close</Button>
+                  : healthImport.status === 'rejected'
                   ? <Button variant="outline" onClick={() => void discardRejectedImport()} loading={importBusy}>Discard and choose another file</Button>
                   : <Button variant="outline" onClick={() => healthImport.status === 'review' ? void cancelHealthImport() : setImportOpen(false)} disabled={importBusy}>{healthImport.status === 'review' ? 'Cancel and remove source' : 'Close'}</Button>}
-                {healthImport.status === 'review' && <><Button variant="outline" onClick={() => void saveImportRows()} loading={importBusy}>Save changes</Button><Button onClick={() => void confirmHealthImport()} loading={importBusy}>Confirm import</Button></>}
+                {!healthImport.deletedAt && healthImport.status === 'review' && <><Button variant="outline" onClick={() => void saveImportRows()} loading={importBusy}>Save changes</Button><Button onClick={() => void confirmHealthImport()} loading={importBusy}>Confirm import</Button></>}
               </DialogFooter>
             </div>
           )}
