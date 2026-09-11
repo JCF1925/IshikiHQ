@@ -53,14 +53,27 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
 
   const event = await prisma.event.findFirst({ where: { id, userId } })
   if (!event) return apiError('NOT_FOUND', 'Event not found', 404)
-  // Preserve a local cancellation while provider-linked deletion can be synced.
-  if (event.externalEventId) {
-    const cancelled = await prisma.event.update({ where: { id }, data: { isCancelled: true, syncStatus: 'pending', syncVersion: { increment: 1 } } })
-    await executeInvitationNotifications(userId, id, cancelled.syncVersion, 'cancelled')
+  const result = await prisma.$transaction(async tx => {
+    // Travel blocks are private event-owned data. Remove them for both local
+    // deletes and provider-linked cancellations so a deleted event cannot
+    // leave timing data behind.
+    await tx.privateTravelBlock.deleteMany({ where: { eventId: id } })
+
+    // Preserve a local cancellation while provider-linked deletion can be synced.
+    if (event.externalEventId) {
+      const cancelled = await tx.event.update({ where: { id }, data: { isCancelled: true, syncStatus: 'pending', syncVersion: { increment: 1 } } })
+      return { cancelled }
+    }
+
+    await tx.event.delete({ where: { id } })
+    return { cancelled: null }
+  })
+
+  if (result.cancelled) {
+    await executeInvitationNotifications(userId, id, result.cancelled.syncVersion, 'cancelled')
     await enqueueCalendarSync(userId, id, 'delete').catch(() => undefined)
   } else {
     await executeInvitationNotifications(userId, id, event.syncVersion, 'cancelled')
-    await prisma.event.delete({ where: { id } })
   }
   return NextResponse.json({ success: true })
 }
