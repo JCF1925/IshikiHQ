@@ -7,7 +7,38 @@ const workflowPath = new URL(
   import.meta.url,
 );
 
+function eventPaths(workflow: string, eventName: "push" | "pull_request") {
+  const lines = workflow.split("\n");
+  const eventStart = lines.indexOf(`  ${eventName}:`);
+
+  assert.notEqual(eventStart, -1, `The release workflow must define an ${eventName} trigger`);
+
+  const eventEnd = lines.findIndex(
+    (line, index) => index > eventStart && /^  \S/.test(line),
+  );
+  const eventLines = lines.slice(eventStart + 1, eventEnd === -1 ? undefined : eventEnd);
+  const pathsStart = eventLines.indexOf("    paths:");
+
+  assert.notEqual(pathsStart, -1, `The ${eventName} trigger must define path filters`);
+
+  return eventLines
+    .slice(pathsStart + 1)
+    .map((line) => line.match(/^      - "([^"]+)"$/)?.[1])
+    .filter((path): path is string => path !== undefined);
+}
+
 describe("Syntropic validation workflow contract", () => {
+  it("runs for workflow-only changes on push and pull requests", async () => {
+    const workflow = await readFile(workflowPath, "utf8");
+
+    for (const eventName of ["push", "pull_request"] as const) {
+      assert.ok(
+        eventPaths(workflow, eventName).includes(".github/workflows/**"),
+        `The ${eventName} trigger must include every file under .github/workflows`,
+      );
+    }
+  });
+
   it("keeps disposable database acceptance protected from CI drift", async () => {
     const workflow = await readFile(workflowPath, "utf8");
 
