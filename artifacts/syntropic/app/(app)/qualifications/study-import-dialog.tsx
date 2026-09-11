@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { parseStudyCsv } from '@/lib/study-csv'
+import { trackStudyImportCommit, trackStudyImportPreview } from '@/lib/analytics'
 
 type Program = { id: string; name: string; periods: Array<{ id: string; name: string }> }
 type Mapping = { code: string; name: string; creditPoints?: string; status?: string }
@@ -105,8 +106,23 @@ export function StudyImportDialog({
       })
       const data = await response.json()
       if (!response.ok) throw new Error(data?.error?.message ?? 'Import review failed')
-      if (action === 'preview') setPreview(data)
+      if (action === 'preview') {
+        trackStudyImportPreview({
+          outcome: data.canCommit ? 'ready' : 'blocked',
+          totalRows: parsed.rows.length,
+          validRows: data.valid.length,
+          duplicateRows: data.duplicates.length,
+          errorRows: data.errors.length,
+          canCommit: data.canCommit,
+        })
+        setPreview(data)
+      }
       else {
+        trackStudyImportCommit({
+          createdCount: data.created,
+          skippedCount: data.skipped,
+          totalCount: data.total,
+        })
         setResult(data)
         setPreview(null)
         setUndoPreview(null)
@@ -117,7 +133,17 @@ export function StudyImportDialog({
       setPreview(null)
       setResult(null)
       const message = error instanceof Error ? error.message : 'Import review failed'
-      setPreview({ valid: [], duplicates: [], total: parsed.rows.length, skipped: 0, canCommit: false, errors: [{ row: 0, field: 'CSV', message }] })
+      if (action === 'preview') {
+        trackStudyImportPreview({
+          outcome: 'request_failed',
+          totalRows: parsed.rows.length,
+          validRows: 0,
+          duplicateRows: 0,
+          errorRows: 1,
+          canCommit: false,
+        })
+        setPreview({ valid: [], duplicates: [], total: parsed.rows.length, skipped: 0, canCommit: false, errors: [{ row: 0, field: 'CSV', message }] })
+      }
     } finally {
       setBusy(false)
     }
