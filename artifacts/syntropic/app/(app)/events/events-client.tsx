@@ -192,7 +192,15 @@ export function EventsClient() {
     try {
       const [s, d] = await Promise.all([fetch('/api/events'), fetch('/api/events/annual')])
       if (!s.ok) throw new Error()
-      setStored(await s.json())
+      const events = await s.json()
+      const travelBlocks = await Promise.all((events as any[]).map(async (event) => {
+        const response = await fetch(`/api/calendar/events/${event.id}/travel-block`)
+        if (!response.ok) return [event.id, null] as const
+        const payload = await response.json()
+        return [event.id, payload?.travelBlock ?? null] as const
+      }))
+      const blocksByEventId = Object.fromEntries(travelBlocks)
+      setStored((events as any[]).map((event) => ({ ...event, travelBlock: blocksByEventId[event.id] ?? null })))
       setDerived(d.ok ? await d.json() : [])
     } catch { toast.error('Failed to load events') }
     finally { setLoading(false) }
@@ -861,6 +869,11 @@ function EventRow({ e, onDelete, onCalendarAction }: { e: any; onDelete: (e: any
               </div>
             )}
             {e?.notes && <p className="text-xs text-muted-foreground mt-1">{e.notes}</p>}
+            {!e.derived && (
+              e.travelBlock?.isPrivate
+                ? <Badge variant="outline" className="mt-2 text-[10px]">Private travel block · {e.travelBlock.travelMinutes} min</Badge>
+                : <p className="mt-2 text-xs text-muted-foreground">No private travel block</p>
+            )}
             {!e.derived && (
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <Button size="sm" variant="outline" onClick={() => onCalendarAction(e.id, 'retry', {}, 'Event sync queued')}>Retry sync</Button>
