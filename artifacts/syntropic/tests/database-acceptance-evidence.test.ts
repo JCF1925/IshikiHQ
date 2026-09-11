@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { after, before, describe, it } from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 const writer = 'scripts/write-database-acceptance-evidence.sh'
+const wrapper = 'scripts/clean-database-acceptance.sh'
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 let testRoot = ''
 
 before(async () => {
@@ -44,6 +47,74 @@ describe('database acceptance evidence contract', () => {
     assert.notEqual(result.status, 0)
     await assert.rejects(readFile(evidenceFile, 'utf8'), { code: 'ENOENT' })
     assert.doesNotMatch(result.stderr, new RegExp(privateMarker))
+  })
+
+  it('suppresses private output when a database acceptance step fails', async () => {
+    const fakeBin = path.join(testRoot, 'failed-step-bin')
+    const evidenceFile = path.join(testRoot, 'failed-step.evidence')
+    const privateMarkers = [
+      'private-health-fixture-name.csv',
+      'private-health-fixture-sha256-7f4d9e',
+      'private-health-storage-key-claims-42',
+      'private-health-audit-row-991',
+      'private-health-parser-field-diagnosis',
+      'private-health-claim-value-sensitive',
+    ]
+
+    await mkdir(fakeBin)
+    await writeFile(
+      path.join(fakeBin, 'pnpm'),
+      `#!/usr/bin/env bash
+if [[ "$*" == *"tests/health-claims-import.test.ts"* ]]; then
+${privateMarkers.map((marker) => `  printf '%s\\n' '${marker}'`).join('\n')}
+${privateMarkers.map((marker) => `  printf '%s\\n' '${marker}' >&2`).join('\n')}
+  exit 73
+fi
+exit 0
+`,
+    )
+    await writeFile(
+      path.join(fakeBin, 'psql'),
+      `#!/usr/bin/env bash
+if [[ "$*" == *"pg_db_role_setting"* ]]; then
+  printf 'disposable\\n'
+fi
+exit 0
+`,
+    )
+    await Promise.all(
+      ['pnpm', 'psql'].map((command) => chmod(path.join(fakeBin, command), 0o700)),
+    )
+
+    const result = spawnSync('bash', [wrapper], {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        DATABASE_URL: 'postgresql://acceptance.test.invalid/database',
+        DATABASE_ACCEPTANCE_TARGET: 'disposable',
+        DATABASE_ACCEPTANCE_EVIDENCE_FILE: evidenceFile,
+        DATABASE_ACCEPTANCE_FOCUS: 'health-claims',
+        PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+      },
+    })
+
+    assert.equal(result.status, 1)
+    assert.equal(result.signal, null)
+    assert.match(result.stderr, /FAILED during account-deletion cleanup database acceptance/)
+    const capturedOutput = [
+      result.stdout,
+      result.stderr,
+      result.error?.message ?? '',
+      await readFile(evidenceFile, 'utf8'),
+    ].join('\n')
+    for (const privateMarker of privateMarkers) {
+      assert.doesNotMatch(capturedOutput, new RegExp(privateMarker))
+    }
+    assert.equal(
+      await readFile(evidenceFile, 'utf8'),
+      'category=test\nstatus=failed\nexit_code=1\n',
+    )
   })
 
   it('writes a separate trend record with only safe release metadata', async () => {
