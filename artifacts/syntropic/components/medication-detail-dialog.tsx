@@ -4,7 +4,6 @@ import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -88,11 +87,11 @@ export function MedicationDetailDialog({ med, practitioners, onClose, onChanged,
 
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
-      <DialogContent aria-describedby="medication-detail-description" className="max-w-none w-screen h-[100dvh] p-0 rounded-none border-none bg-background flex flex-col gap-0 shadow-none">
+      <DialogContent aria-describedby="medication-detail-description" className="flex h-[100dvh] w-screen min-w-0 max-w-[100vw] flex-col gap-0 overflow-hidden rounded-none border-none bg-background p-0 shadow-none">
         <DialogTitle className="sr-only">Medication details</DialogTitle>
         <div id="medication-detail-description" className="sr-only">Detailed view of medication products and variants</div>
-        <ScrollArea className="flex-1 h-full">
-          <div className="max-w-4xl mx-auto p-4 md:p-8 space-y-8 pb-20">
+        <div className="h-full min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
+          <div className="mx-auto w-full min-w-0 max-w-4xl space-y-8 p-4 pb-20 md:p-8">
             
             {/* Top Navigation */}
             <div className="pt-2 md:pt-4">
@@ -167,7 +166,7 @@ export function MedicationDetailDialog({ med, practitioners, onClose, onChanged,
             <PharmacyRefillPanel medicationId={product.id} />
 
           </div>
-        </ScrollArea>
+        </div>
       </DialogContent>
       <Dialog open={editing} onOpenChange={setEditing}>
         <DialogContent aria-describedby="edit-product-description" className="max-w-md">
