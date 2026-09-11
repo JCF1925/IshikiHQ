@@ -72,20 +72,20 @@ export async function POST(request: Request) {
 
   const dose = Number(body.doseTaken ?? schedule.doseAmount ?? '1')
   if (!body.skipped && (!Number.isFinite(dose) || dose <= 0)) return NextResponse.json({ error: 'doseTaken must be a positive number' }, { status: 400 })
-  const medId = schedule.prescription?.medicationId ?? schedule.medicationId
-  if (!medId) return NextResponse.json({ error: 'Schedule is not linked to a medication' }, { status: 400 })
+  const medicationId = schedule.prescription?.medicationId ?? schedule.medicationId
+  if (!medicationId) return NextResponse.json({ error: 'Schedule is not linked to a medication' }, { status: 400 })
   const createLog = async (tx: Prisma.TransactionClient) => {
-    if (!body.skipped && medId) {
+    if (!body.skipped) {
       // Conditional update makes concurrent logging unable to take stock below zero.
-      const updated = await tx.stockLevel.updateMany({ where: { userId, medicationId: medId, currentQuantity: { gte: dose } }, data: { currentQuantity: { decrement: dose } } })
+      const updated = await tx.stockLevel.updateMany({ where: { userId, medicationId, currentQuantity: { gte: dose } }, data: { currentQuantity: { decrement: dose } } })
       if (!updated.count) throw new Error('INSUFFICIENT_STOCK')
-      const stock = await tx.stockLevel.findFirst({ where: { userId, medicationId: medId }, select: { currentQuantity: true } })
-      await tx.stockTransaction.create({ data: { userId, medicationId: medId, type: 'consume', quantityChange: -dose, balanceAfter: stock!.currentQuantity, notes: 'Dose logged' } })
+      const stock = await tx.stockLevel.findFirst({ where: { userId, medicationId }, select: { currentQuantity: true } })
+      await tx.stockTransaction.create({ data: { userId, medicationId, type: 'consume', quantityChange: -dose, balanceAfter: stock!.currentQuantity, notes: 'Dose logged' } })
     }
     return tx.medicationLog.create({
     data: {
       userId,
-      medicationId: medId,
+      medicationId,
       scheduleId,
       takenAt: body.takenAt ?? new Date(),
       doseTaken: body.skipped ? (body.doseTaken ?? null) : String(dose),
@@ -94,7 +94,7 @@ export async function POST(request: Request) {
       symptomNote: body.symptomNote ?? null,
     }})
   }
-  const log = await withMedicationStockTransaction(userId, medId, createLog)
+  const log = await withMedicationStockTransaction(userId, medicationId, createLog)
     .catch(error => error instanceof Error && error.message === 'INSUFFICIENT_STOCK' ? null : Promise.reject(error))
   if (!log) return NextResponse.json({ error: 'Insufficient stock to log this dose' }, { status: 409 })
 
