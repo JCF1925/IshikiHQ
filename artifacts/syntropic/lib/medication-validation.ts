@@ -4,6 +4,7 @@ const text = (max = 5000) => z.string().trim().max(max)
 const optionalText = (max = 5000) => text(max).optional().nullable()
 const id = z.string().cuid()
 const finite = z.coerce.number().finite().min(0).max(1_000_000_000)
+const signedFinite = z.coerce.number().finite().min(-1_000_000_000).max(1_000_000_000)
 const date = z.coerce.date().refine(value => !Number.isNaN(value.getTime()), 'Invalid date')
 const blankToNull = (value: unknown) => value === '' ? null : value
 const blankToUndefined = (value: unknown) => value === '' ? undefined : value
@@ -12,6 +13,10 @@ const optionalFinite = z.preprocess(blankToUndefined, finite.optional())
 const nullableFinite = z.preprocess(blankToNull, finite.optional().nullable())
 const optionalDate = z.preprocess(blankToUndefined, date.optional())
 const nullableDate = z.preprocess(blankToNull, date.optional().nullable())
+const reservedStockAuditNotePrefixes = [
+  'Historical stock reconciliation:',
+  'Historical stock mismatch resolution:',
+] as const
 
 export const medicationCreateSchema = z.object({
   name: text(300).min(1), genericName: optionalText(300), form: text(80).optional(), strength: optionalText(100),
@@ -51,24 +56,38 @@ export const medicationLogSchema = z.object({
   skipped: z.boolean().optional(), skipReason: optionalText(), symptomNote: optionalText(),
 }).strict()
 export const stockUpdateSchema = z.object({ id, currentQuantity: optionalFinite, reorderThreshold: optionalFinite, monthlyLimit: nullableFinite }).strict().refine(v => v.currentQuantity != null || v.reorderThreshold != null || v.monthlyLimit !== undefined, 'Provide at least one stock field')
-export const stockReconciliationSchema = z.object({
-  action: z.literal('reconcile'),
-  id,
-  expectedCurrentQuantity: finite,
-  expectedLedgerQuantity: finite,
-}).strict()
+export const stockReconciliationSchema = z.discriminatedUnion('action', [
+  z.object({
+    action: z.literal('reconcile'),
+    id,
+    expectedCurrentQuantity: finite,
+    expectedLedgerQuantity: finite,
+  }).strict(),
+  z.object({
+    action: z.literal('resolve_mismatch'),
+    id,
+    mismatchId: id,
+    expectedRecordedBalance: signedFinite,
+    expectedLedgerBalance: signedFinite,
+    reason: text(2000).min(1),
+  }).strict(),
+])
 export const stockTransactionSchema = z.object({
   medicationId: id, type: z.enum(['dispense', 'consume', 'adjustment', 'stocktake', 'dispose']),
-  quantityChange: z.coerce.number().finite().min(-1_000_000_000).max(1_000_000_000).optional(),
+  quantityChange: signedFinite.optional(),
   countedQuantity: optionalFinite, notes: optionalText(), date: optionalDate,
 }).strict().superRefine((v, ctx) => {
   if (v.type === 'stocktake' && v.countedQuantity == null) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['countedQuantity'], message: 'countedQuantity is required for a stocktake' })
   if (v.type !== 'stocktake' && v.quantityChange == null) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['quantityChange'], message: 'quantityChange is required' })
+  if (v.notes && reservedStockAuditNotePrefixes.some(prefix => v.notes!.startsWith(prefix))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['notes'], message: 'This note prefix is reserved for audited stock reviews' })
+  }
 })
 
 export const pharmacySchema = z.object({
   name: text(200).min(1), address: optionalText(500), phone: optionalText(80), notes: optionalText(),
 }).strict()
+export const pharmacyUpdateSchema = pharmacySchema.partial().extend({ isActive: z.boolean().optional() }).strict()
 export const pharmacyPreferenceSchema = z.object({ medicationId: id, pharmacyId: id }).strict()
 export const orderLineSchema = z.object({
   medicationId: id, prescriptionId: optionalId, quantity: finite.min(0.000001), status: z.enum(['ordered', 'received', 'substituted', 'cancelled']).optional(),
