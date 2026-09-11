@@ -29,7 +29,9 @@ export default function StoragePage() {
     generateQR,
     generateLabels,
     activeLabels,
+    hasLoadedLabels,
     isLoadingLabels,
+    isValidatingLabels,
     labelsError,
     reprintLabel,
     revokeLabel,
@@ -407,15 +409,23 @@ export default function StoragePage() {
                 <h2 className="text-xl font-bold tracking-tight">Active storage labels</h2>
                 <p className="text-sm text-muted-foreground">Reprint or revoke one label without changing the others.</p>
               </div>
-              <span className="text-sm text-muted-foreground">{activeLabels.length} active</span>
+              <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                {isValidatingLabels && (
+                  <span className="flex items-center gap-1.5" aria-live="polite">
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    Refreshing…
+                  </span>
+                )}
+                <span>{activeLabels.length} active</span>
+              </div>
             </div>
 
-            {labelsError ? (
+            {labelsError && !hasLoadedLabels ? (
               <div className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive" role="alert">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>Active labels could not be loaded. Please try again.</span>
               </div>
-            ) : isLoadingLabels ? (
+            ) : isLoadingLabels && !hasLoadedLabels ? (
               <div className="flex items-center justify-center rounded-xl border border-dashed p-12 text-sm text-muted-foreground">
                 Loading active labels…
               </div>
@@ -530,6 +540,7 @@ export default function StoragePage() {
           setLabelSheetOpen(open)
           if (!open) setPreparedLabel(null)
         }}
+        householdId={activeHousehold.id}
         selected={Object.values(selectedLabels)}
         generateLabels={generateLabels}
         preparedLabels={preparedLabel ? [preparedLabel] : null}
