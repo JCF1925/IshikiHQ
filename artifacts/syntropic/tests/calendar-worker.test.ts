@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import { after, before, describe, it } from 'node:test'
 import { PrismaClient } from '@prisma/client'
-import { executeCalendarSyncJob } from '../lib/calendar-server.ts'
+import {
+  executeCalendarSyncJob,
+  persistRefreshedCalendarCredential,
+} from '../lib/calendar-server.ts'
 import {
   CalendarProviderError,
   type CalendarProvider,
@@ -298,6 +301,159 @@ describe('Calendar worker acceptance fixture', () => {
       })).map(row => row.status),
       ['cancelled', 'cancelled'],
     )
+  })
+
+  it('does not restore revoked credentials from a late in-flight token refresh', async () => {
+    const account = await prisma.account.create({
+      data: {
+        userId,
+        type: 'oauth',
+        provider: 'google',
+        providerAccountId: `${marker}-refresh-race`,
+        access_token: 'old-access',
+        refresh_token: 'old-refresh',
+        expires_at: 2_000_000_000,
+      },
+    })
+    const connection = await prisma.calendarProviderConnection.create({
+      data: {
+        userId,
+        provider: 'google',
+        providerAccountId: `${marker}-refresh-race`,
+        credentialReference: account.id,
+      },
+    })
+    const revocationSession = new PrismaClient()
+    let releaseRevocation!: () => void
+    let signalConnectionLocked!: () => void
+    const connectionLocked = new Promise<void>(resolve => { signalConnectionLocked = resolve })
+    const holdRevocation = new Promise<void>(resolve => { releaseRevocation = resolve })
+    const revocation = revocationSession.$transaction(async tx => {
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "CalendarProviderConnection"
+        WHERE "id" = ${connection.id}
+        FOR UPDATE
+      `
+      signalConnectionLocked()
+      await holdRevocation
+      await tx.account.update({
+        where: { id: account.id },
+        data: { access_token: null, refresh_token: null, expires_at: null },
+      })
+      await tx.calendarProviderConnection.update({
+        where: { id: connection.id },
+        data: {
+          status: 'disabled',
+          disconnectedAt: new Date(),
+          credentialReference: null,
+          lastSyncError: 'Reconnect Calendar',
+        },
+      })
+    })
+    await connectionLocked
+
+    let refreshSettled = false
+    const lateRefresh = persistRefreshedCalendarCredential(
+      { id: connection.id, userId, credentialReference: account.id },
+      {
+        accessToken: 'late-access',
+        refreshToken: 'late-refresh',
+        expiresAt: new Date('2035-01-01T00:00:00.000Z'),
+      },
+      'old-refresh',
+    ).finally(() => { refreshSettled = true })
+    await new Promise(resolve => setTimeout(resolve, 25))
+    assert.equal(refreshSettled, false)
+
+    releaseRevocation()
+    await revocation
+    assert.equal(await lateRefresh, 0)
+    await revocationSession.$disconnect()
+
+    const disabled = await prisma.calendarProviderConnection.findUniqueOrThrow({ where: { id: connection.id } })
+    assert.equal(disabled.status, 'disabled')
+    assert.equal(disabled.credentialReference, null)
+    assert.ok(disabled.disconnectedAt)
+    const scrubbed = await prisma.account.findUniqueOrThrow({ where: { id: account.id } })
+    assert.equal(scrubbed.access_token, null)
+    assert.equal(scrubbed.refresh_token, null)
+    assert.equal(scrubbed.expires_at, null)
+  })
+
+  it('persists refreshed credentials while the connection remains active', async () => {
+    const account = await prisma.account.create({
+      data: {
+        userId,
+        type: 'oauth',
+        provider: 'google',
+        providerAccountId: `${marker}-active-refresh`,
+        access_token: 'active-old-access',
+        refresh_token: 'active-old-refresh',
+        expires_at: 2_000_000_000,
+      },
+    })
+    const connection = await prisma.calendarProviderConnection.create({
+      data: {
+        userId,
+        provider: 'google',
+        providerAccountId: `${marker}-active-refresh`,
+        credentialReference: account.id,
+      },
+    })
+
+    assert.equal(await persistRefreshedCalendarCredential(
+      { id: connection.id, userId, credentialReference: account.id },
+      {
+        accessToken: 'active-fresh-access',
+        refreshToken: 'active-fresh-refresh',
+        expiresAt: new Date('2035-01-01T00:00:00.000Z'),
+      },
+      'active-old-refresh',
+    ), 1)
+
+    const refreshed = await prisma.account.findUniqueOrThrow({ where: { id: account.id } })
+    assert.equal(refreshed.access_token, 'active-fresh-access')
+    assert.equal(refreshed.refresh_token, 'active-fresh-refresh')
+    assert.equal(refreshed.expires_at, 2_051_222_400)
+  })
+
+  it('does not restore credentials after a connection is disconnected', async () => {
+    const account = await prisma.account.create({
+      data: {
+        userId,
+        type: 'oauth',
+        provider: 'google',
+        providerAccountId: `${marker}-disconnected-refresh`,
+        access_token: null,
+        refresh_token: null,
+        expires_at: null,
+      },
+    })
+    const connection = await prisma.calendarProviderConnection.create({
+      data: {
+        userId,
+        provider: 'google',
+        providerAccountId: `${marker}-disconnected-refresh`,
+        credentialReference: account.id,
+        disconnectedAt: new Date(),
+      },
+    })
+
+    assert.equal(await persistRefreshedCalendarCredential(
+      { id: connection.id, userId, credentialReference: account.id },
+      {
+        accessToken: 'disconnected-late-access',
+        refreshToken: 'disconnected-late-refresh',
+        expiresAt: new Date('2035-01-01T00:00:00.000Z'),
+      },
+      'disconnected-old-refresh',
+    ), 0)
+
+    const unchanged = await prisma.account.findUniqueOrThrow({ where: { id: account.id } })
+    assert.equal(unchanged.access_token, null)
+    assert.equal(unchanged.refresh_token, null)
+    assert.equal(unchanged.expires_at, null)
   })
 
   it('retains valid credentials after a transient provider failure', async () => {
