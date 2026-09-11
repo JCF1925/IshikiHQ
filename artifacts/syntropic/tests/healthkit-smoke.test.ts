@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
   importHealthKitWithRecovery,
+  importHealthKitTypesWithRecovery,
+  type HealthKitBatchImportCommit,
   type HealthKitImportCommit,
   runHealthKitSmokeTest,
 } from '../../syntropic-mobile/lib/health-smoke'
@@ -199,6 +201,49 @@ describe('HealthKit development-build smoke contract', () => {
     assert.equal(removed, true)
   })
 
+  it('warns when cleanup fails without changing the anchored-read result', async () => {
+    const cleanupFailure = 'cleanup failed for private sample identifier'
+    const adapter: HealthAdapter = {
+      availability: async () => ({ available: true }),
+      authorization: async () => 'authorized',
+      request: async () => ({
+        cardiovascular: 'denied',
+        blood_pressure: 'denied',
+        sleep: 'denied',
+        activity: 'authorized',
+        body_measurements: 'denied',
+        temperature: 'denied',
+        oxygen: 'denied',
+        respiratory: 'denied',
+      }),
+      read: async (type, anchor) => ({
+        samples: anchor ? [{
+          id: 'synthetic-sample',
+          type,
+          value: 1,
+          unit: 'count',
+          startDate: '2026-09-09T00:00:00.000Z',
+          endDate: '2026-09-09T00:01:00.000Z',
+          source: 'com.apple.Health',
+          sourceRevision: 'smoke',
+        }] : [],
+        deletions: [],
+        anchor: anchor ? `${anchor}-next` : `${type}-anchor-1`,
+      }),
+      writeSmokeSample: async () => {},
+      removeSmokeSample: async () => { throw new Error(cleanupFailure) },
+    }
+
+    const [result] = await runHealthKitSmokeTest(adapter, ['activity'])
+
+    assert.equal(result.authorization, 'authorized')
+    assert.equal(result.anchoredRead, true)
+    assert.equal(result.sampleDeltaPassed, true)
+    assert.equal(result.cleanupWarning, 'Temporary HealthKit sample could not be removed. It may remain on this device. Anchored-read results are still shown.')
+    assert.doesNotMatch(result.cleanupWarning ?? '', new RegExp(cleanupFailure))
+    assert.equal(result.error, undefined)
+  })
+
   it('keeps the last server anchor across an interrupted read and recreated importer', async () => {
     const reads: Array<{ type: HealthType; anchor?: string }> = []
     const batches: Array<{
@@ -298,6 +343,143 @@ describe('HealthKit development-build smoke contract', () => {
       { type: 'activity', anchor: 'server-anchor-1' },
       { type: 'activity', anchor: 'server-anchor-1' },
       { type: 'activity', anchor: 'server-anchor-1' },
+    ])
+  })
+
+  it('continues a recreated multi-type import when one type stays interrupted', async () => {
+    const reads: Array<{ type: HealthType; anchor?: string }> = []
+    const batches: Array<{
+      type: HealthType;
+      previousAnchor: string | null;
+      anchor: string;
+      sampleIds: string[];
+    }> = []
+    const persistedAnchors: Partial<Record<HealthType, string>> = {
+      activity: 'activity-server-anchor-1',
+      sleep: 'sleep-server-anchor-1',
+    }
+    let mode: 'interrupted' | 'recovered' = 'interrupted'
+
+    const createAdapter = (): HealthAdapter => ({
+      availability: async () => ({ available: true }),
+      authorization: async () => 'authorized',
+      request: async () => ({
+        cardiovascular: 'denied',
+        blood_pressure: 'denied',
+        sleep: 'authorized',
+        activity: 'authorized',
+        body_measurements: 'denied',
+        temperature: 'denied',
+        oxygen: 'denied',
+        respiratory: 'denied',
+      }),
+      read: async (type, anchor) => {
+        reads.push({ type, anchor })
+        if (type === 'activity' && mode === 'interrupted') {
+          return {
+            samples: [{
+              id: 'activity-partial-sample',
+              type,
+              value: 7,
+              unit: 'count',
+              startDate: '2026-09-08T00:00:00.000Z',
+              endDate: '2026-09-08T00:01:00.000Z',
+              source: 'com.apple.Health',
+              sourceRevision: 'acceptance',
+            }],
+            deletions: [],
+          }
+        }
+        return {
+          samples: type === 'sleep'
+            ? [{
+              id: mode === 'interrupted' ? 'sleep-imported-sample' : 'sleep-second-sample',
+              type,
+              value: 8,
+              unit: 'hours',
+              startDate: '2026-09-08T01:00:00.000Z',
+              endDate: '2026-09-08T09:00:00.000Z',
+              source: 'com.apple.Health',
+              sourceRevision: 'acceptance',
+            }]
+            : [{
+              id: 'activity-recovered-sample',
+              type,
+              value: 9,
+              unit: 'count',
+              startDate: '2026-09-08T02:00:00.000Z',
+              endDate: '2026-09-08T02:01:00.000Z',
+              source: 'com.apple.Health',
+              sourceRevision: 'acceptance',
+            }],
+          deletions: [],
+          anchor: type === 'activity' ? 'activity-server-anchor-2' : (
+            mode === 'interrupted' ? 'sleep-server-anchor-2' : 'sleep-server-anchor-3'
+          ),
+        }
+      },
+      writeSmokeSample: async () => {},
+      removeSmokeSample: async () => {},
+    })
+
+    const commit: HealthKitBatchImportCommit = async ({ type, previousAnchor, result }) => {
+      batches.push({
+        type,
+        previousAnchor,
+        anchor: result.anchor,
+        sampleIds: result.samples.map((sample) => sample.id),
+      })
+      persistedAnchors[type] = result.anchor
+    }
+
+    const interruptedRun = await importHealthKitTypesWithRecovery(
+      createAdapter(),
+      ['activity', 'sleep'],
+      persistedAnchors,
+      commit,
+    )
+
+    assert.deepEqual(interruptedRun.completed.map(({ type }) => type), ['sleep'])
+    assert.deepEqual(interruptedRun.failures.map(({ type }) => type), ['activity'])
+    assert.equal(persistedAnchors.activity, 'activity-server-anchor-1')
+    assert.equal(persistedAnchors.sleep, 'sleep-server-anchor-2')
+    assert.deepEqual(batches, [{
+      type: 'sleep',
+      previousAnchor: 'sleep-server-anchor-1',
+      anchor: 'sleep-server-anchor-2',
+      sampleIds: ['sleep-imported-sample'],
+    }])
+
+    mode = 'recovered'
+    const recreatedRun = await importHealthKitTypesWithRecovery(
+      createAdapter(),
+      ['activity'],
+      persistedAnchors,
+      commit,
+    )
+
+    assert.deepEqual(recreatedRun.failures, [])
+    assert.equal(recreatedRun.completed[0]?.result.anchor, 'activity-server-anchor-2')
+    assert.equal(persistedAnchors.activity, 'activity-server-anchor-2')
+    assert.deepEqual(batches, [
+      {
+        type: 'sleep',
+        previousAnchor: 'sleep-server-anchor-1',
+        anchor: 'sleep-server-anchor-2',
+        sampleIds: ['sleep-imported-sample'],
+      },
+      {
+        type: 'activity',
+        previousAnchor: 'activity-server-anchor-1',
+        anchor: 'activity-server-anchor-2',
+        sampleIds: ['activity-recovered-sample'],
+      },
+    ])
+    assert.deepEqual(reads, [
+      { type: 'activity', anchor: 'activity-server-anchor-1' },
+      { type: 'activity', anchor: 'activity-server-anchor-1' },
+      { type: 'sleep', anchor: 'sleep-server-anchor-1' },
+      { type: 'activity', anchor: 'activity-server-anchor-1' },
     ])
   })
 })
