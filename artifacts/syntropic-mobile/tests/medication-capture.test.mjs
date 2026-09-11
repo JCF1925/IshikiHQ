@@ -5,6 +5,7 @@ import {
   getCachedMedicationOptions,
   getMedicationChoices,
   getMedicationSchedules,
+  reconcileMedicationSelection,
 } from '../lib/medication-capture.ts';
 
 const reminders = [
@@ -107,6 +108,74 @@ describe('medication capture picker', () => {
     assert.equal(queued?.medicationId, 'med-stable-2');
     assert.equal(queued?.scheduleId, 'schedule-other');
     assert.equal(queued?.dose, undefined);
+  });
+
+  it('replaces cached medication and schedule choices before queueing a new capture', () => {
+    const refreshedReminders = [
+      {
+        medicationId: 'med-refreshed',
+        medicationLabel: 'Updated medication',
+        scheduleId: 'schedule-refreshed',
+        times: ['09:00'],
+        doseAmount: '2 tablets',
+        enabled: true,
+        revealName: false,
+      },
+    ];
+    const selection = reconcileMedicationSelection(refreshedReminders, {
+      medicationId: 'med-stable-1',
+      scheduleId: 'schedule-evening',
+    });
+
+    assert.deepEqual(selection, { medicationId: '', scheduleId: '' });
+    assert.deepEqual(getMedicationChoices(refreshedReminders).map(({ medicationId, scheduleId }) => ({ medicationId, scheduleId })), [
+      { medicationId: 'med-refreshed', scheduleId: 'schedule-refreshed' },
+    ]);
+
+    const queued = buildMedicationCaptureQueueInput({
+      reminders: refreshedReminders,
+      medicationId: 'med-refreshed',
+      scheduleId: 'schedule-refreshed',
+      dose: '',
+      medicationStatus: 'taken',
+      detail: '',
+      occurredAt: '2026-09-11T00:00:00.000Z',
+    });
+
+    assert.equal(queued?.medicationId, 'med-refreshed');
+    assert.equal(queued?.scheduleId, 'schedule-refreshed');
+    assert.equal(queued?.title, 'Updated medication');
+  });
+
+  it('clears a removed schedule and rejects the stale schedule from submission', () => {
+    const refreshedReminders = [
+      {
+        medicationId: 'med-stable-1',
+        medicationLabel: 'Morning medication',
+        scheduleId: 'schedule-morning',
+        times: ['08:00'],
+        doseAmount: '1 tablet',
+        enabled: true,
+        revealName: false,
+      },
+    ];
+
+    assert.deepEqual(
+      reconcileMedicationSelection(refreshedReminders, {
+        medicationId: 'med-stable-1',
+        scheduleId: 'schedule-evening',
+      }),
+      { medicationId: 'med-stable-1', scheduleId: '' },
+    );
+    assert.equal(buildMedicationCaptureQueueInput({
+      reminders: refreshedReminders,
+      medicationId: 'med-stable-1',
+      scheduleId: 'schedule-evening',
+      dose: '',
+      medicationStatus: 'taken',
+      detail: '',
+      occurredAt: '2026-09-11T00:01:00.000Z',
+    }), null);
   });
 });
 
