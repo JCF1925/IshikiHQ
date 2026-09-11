@@ -38,8 +38,8 @@ run_health_claim_acceptance() {
   run_acceptance_step \
     'test' \
     'account-deletion cleanup database acceptance' \
-    env DATABASE_URL="$test_database_url" HEALTH_CLAIM_DATABASE_TESTS=1 \
-    pnpm exec tsx --test --experimental-test-module-mocks tests/health-claims-import.test.ts
+    env DATABASE_URL="$test_database_url" HEALTH_CLAIM_DATABASE_TESTS=1 HEALTH_FUNDING_SUMMARY_DATABASE_TESTS=1 \
+    pnpm exec tsx --test --experimental-test-module-mocks tests/health-claims-import.test.ts tests/health-funding-summary.test.ts
 }
 
 run_price_watch_acceptance() {
@@ -50,12 +50,78 @@ run_price_watch_acceptance() {
     pnpm exec tsx --test --experimental-test-module-mocks tests/price-watch-database.test.ts
 }
 
+run_storage_label_acceptance() {
+  run_acceptance_step \
+    'test' \
+    'storage label revocation database acceptance' \
+    env DATABASE_URL="$test_database_url" STORAGE_LABEL_DATABASE_TESTS=1 \
+    pnpm exec tsx --test --experimental-test-module-mocks tests/storage-labels-database.test.ts
+}
+
+run_appointment_care_acceptance() {
+  run_acceptance_step \
+    'test' \
+    'appointment-care privacy database acceptance' \
+    env DATABASE_URL="$test_database_url" APPOINTMENT_CARE_DATABASE_TESTS=1 \
+    pnpm exec tsx --test --experimental-test-module-mocks tests/appointment-care-db.test.ts
+}
+
 run_calendar_connection_acceptance() {
   run_acceptance_step \
     'test' \
     'calendar reconnect database acceptance' \
     env DATABASE_URL="$test_database_url" CALENDAR_CONNECTION_DATABASE_TESTS=1 \
     pnpm exec tsx --test --experimental-test-module-mocks tests/calendar-connections-database.test.ts
+}
+
+run_calendar_route_acceptance() {
+  run_acceptance_step \
+    'test' \
+    'calendar route privacy database acceptance' \
+    env DATABASE_URL="$test_database_url" CALENDAR_ROUTE_DATABASE_TESTS=1 \
+    pnpm exec tsx --test --experimental-test-module-mocks tests/calendar-provider.test.ts
+}
+
+run_calendar_event_lifecycle_acceptance() {
+  run_acceptance_step \
+    'test' \
+    'calendar event lifecycle database acceptance' \
+    env DATABASE_URL="$test_database_url" CALENDAR_EVENT_LIFECYCLE_DATABASE_TESTS=1 \
+    pnpm exec tsx --test --experimental-test-module-mocks tests/calendar-event-lifecycle.test.ts
+}
+
+run_interpersonal_debt_acceptance() {
+  run_acceptance_step \
+    'test' \
+    'interpersonal debt database acceptance' \
+    env DATABASE_URL="$test_database_url" INTERPERSONAL_DEBT_DATABASE_TESTS=1 \
+    pnpm exec tsx --test --experimental-test-module-mocks tests/interpersonal-debt-db.test.ts
+}
+
+run_pharmacy_refill_acceptance() {
+  run_acceptance_step \
+    'test' \
+    'pharmacy refill database acceptance' \
+    env DATABASE_URL="$test_database_url" PHARMACY_REFILL_DATABASE_TESTS=1 \
+    pnpm exec tsx --test --experimental-test-module-mocks tests/pharmacy-refill-db.test.ts
+}
+
+run_referral_usage_acceptance() {
+  run_acceptance_step \
+    'test' \
+    'referral usage database acceptance' \
+    env DATABASE_URL="$test_database_url" REFERRAL_DATABASE_TESTS=1 \
+    pnpm exec tsx --test --experimental-test-module-mocks tests/referral-usage-database.test.ts
+}
+
+run_signup_destination_acceptance() {
+  run_acceptance_step \
+    'test' \
+    'signup protected-destination browser acceptance' \
+    env DATABASE_URL="$test_database_url" CI=1 \
+    SIGNUP_DESTINATION_ACCEPTANCE=1 \
+    SIGNUP_DESTINATION_ACCEPTANCE_SCHEMA="$schema" \
+    pnpm exec playwright test --project=signup-destination
 }
 
 schema="acceptance_$(date +%s)_$$"
@@ -154,12 +220,23 @@ legacy_other_email="legacy-health-other-${schema}@example.test"
 legacy_claim_payload="legacy-health-claim-payload-${schema}"
 legacy_storage_key="legacy-health-source-${schema}"
 legacy_policy_id="legacy_health_claim_policy_${schema}"
+legacy_other_policy_id="legacy_health_claim_other_policy_${schema}"
 legacy_medicare_first_id="legacy_health_claim_medicare_first_${schema}"
 legacy_medicare_second_id="legacy_health_claim_medicare_second_${schema}"
+legacy_other_medicare_first_id="legacy_health_claim_other_medicare_first_${schema}"
+legacy_other_medicare_second_id="legacy_health_claim_other_medicare_second_${schema}"
+legacy_medicare_tie_a_id="legacy_health_claim_medicare_tie_a_${schema}"
+legacy_medicare_tie_b_id="legacy_health_claim_medicare_tie_b_${schema}"
 legacy_phi_first_id="legacy_health_claim_phi_first_${schema}"
 legacy_phi_second_id="legacy_health_claim_phi_second_${schema}"
+legacy_other_phi_first_id="legacy_health_claim_other_phi_first_${schema}"
+legacy_other_phi_second_id="legacy_health_claim_other_phi_second_${schema}"
+legacy_phi_tie_a_id="legacy_health_claim_phi_tie_a_${schema}"
+legacy_phi_tie_b_id="legacy_health_claim_phi_tie_b_${schema}"
 legacy_medicare_fingerprint="legacy-medicare-fingerprint-${schema}"
 legacy_phi_fingerprint="legacy-phi-fingerprint-${schema}"
+legacy_medicare_tie_fingerprint="legacy-medicare-tie-fingerprint-${schema}"
+legacy_phi_tie_fingerprint="legacy-phi-tie-fingerprint-${schema}"
 
 # Insert the mismatch while the legacy schema has no ownership trigger. Keep
 # all values private markers so the assertions below can prove the check does
@@ -177,12 +254,23 @@ PGOPTIONS="-c search_path=$schema" psql \
   --variable="claim_payload=$legacy_claim_payload" \
   --variable="storage_key=$legacy_storage_key" \
   --variable="policy_id=$legacy_policy_id" \
+  --variable="other_policy_id=$legacy_other_policy_id" \
   --variable="medicare_first_id=$legacy_medicare_first_id" \
   --variable="medicare_second_id=$legacy_medicare_second_id" \
+  --variable="other_medicare_first_id=$legacy_other_medicare_first_id" \
+  --variable="other_medicare_second_id=$legacy_other_medicare_second_id" \
+  --variable="medicare_tie_a_id=$legacy_medicare_tie_a_id" \
+  --variable="medicare_tie_b_id=$legacy_medicare_tie_b_id" \
   --variable="phi_first_id=$legacy_phi_first_id" \
   --variable="phi_second_id=$legacy_phi_second_id" \
+  --variable="other_phi_first_id=$legacy_other_phi_first_id" \
+  --variable="other_phi_second_id=$legacy_other_phi_second_id" \
+  --variable="phi_tie_a_id=$legacy_phi_tie_a_id" \
+  --variable="phi_tie_b_id=$legacy_phi_tie_b_id" \
   --variable="medicare_fingerprint=$legacy_medicare_fingerprint" \
   --variable="phi_fingerprint=$legacy_phi_fingerprint" \
+  --variable="medicare_tie_fingerprint=$legacy_medicare_tie_fingerprint" \
+  --variable="phi_tie_fingerprint=$legacy_phi_tie_fingerprint" \
   "$DATABASE_URL" >/dev/null 2>&1 <<'SQL'
 INSERT INTO "User" ("id", "email", "updatedAt")
 VALUES
@@ -250,6 +338,19 @@ VALUES (
   CURRENT_TIMESTAMP
 );
 
+INSERT INTO "PhiPolicy" (
+  "id",
+  "userId",
+  "policyName",
+  "updatedAt"
+)
+VALUES (
+  :'other_policy_id',
+  :'other_user_id',
+  'Legacy private health policy for second user',
+  CURRENT_TIMESTAMP
+);
+
 INSERT INTO "MedicareClaim" (
   "id",
   "userId",
@@ -277,6 +378,44 @@ VALUES
     :'medicare_fingerprint',
     TIMESTAMP '2026-01-02 09:00:00',
     TIMESTAMP '2026-01-02 09:00:00'
+   ),
+   (
+     :'other_medicare_first_id',
+     :'other_user_id',
+     TIMESTAMP '2026-01-03 09:00:00',
+     'Legacy Medicare claim for second user retained first',
+     :'medicare_fingerprint',
+     TIMESTAMP '2026-01-03 09:00:00',
+     TIMESTAMP '2026-01-03 09:00:00'
+   ),
+   -- These claims have the same timestamp; the migration must use the
+   -- lexicographically lowest ID as the stable fingerprint owner.
+   (
+     :'medicare_tie_a_id',
+     :'owner_id',
+     TIMESTAMP '2026-01-03 09:00:00',
+     'Legacy Medicare claim tied on creation time A',
+     :'medicare_tie_fingerprint',
+     TIMESTAMP '2026-01-03 09:00:00',
+     TIMESTAMP '2026-01-03 09:00:00'
+   ),
+   (
+     :'other_medicare_second_id',
+     :'other_user_id',
+     TIMESTAMP '2026-01-04 09:00:00',
+     'Legacy Medicare claim for second user retained as history',
+     :'medicare_fingerprint',
+     TIMESTAMP '2026-01-04 09:00:00',
+     TIMESTAMP '2026-01-04 09:00:00'
+   ),
+   (
+     :'medicare_tie_b_id',
+     :'owner_id',
+     TIMESTAMP '2026-01-03 09:00:00',
+     'Legacy Medicare claim tied on creation time B',
+     :'medicare_tie_fingerprint',
+     TIMESTAMP '2026-01-03 09:00:00',
+     TIMESTAMP '2026-01-03 09:00:00'
   );
 
 INSERT INTO "PhiClaim" (
@@ -309,6 +448,46 @@ VALUES
     :'phi_fingerprint',
     TIMESTAMP '2026-02-02 09:00:00',
     TIMESTAMP '2026-02-02 09:00:00'
+   ),
+   (
+     :'other_phi_first_id',
+     :'other_user_id',
+     :'other_policy_id',
+     TIMESTAMP '2026-02-03 09:00:00',
+     'Legacy private health claim for second user retained first',
+     :'phi_fingerprint',
+     TIMESTAMP '2026-02-03 09:00:00',
+     TIMESTAMP '2026-02-03 09:00:00'
+   ),
+   (
+     :'phi_tie_a_id',
+     :'owner_id',
+     :'policy_id',
+     TIMESTAMP '2026-02-03 09:00:00',
+     'Legacy private health claim tied on creation time A',
+     :'phi_tie_fingerprint',
+     TIMESTAMP '2026-02-03 09:00:00',
+     TIMESTAMP '2026-02-03 09:00:00'
+   ),
+   (
+     :'other_phi_second_id',
+     :'other_user_id',
+     :'other_policy_id',
+     TIMESTAMP '2026-02-04 09:00:00',
+     'Legacy private health claim for second user retained as history',
+     :'phi_fingerprint',
+     TIMESTAMP '2026-02-04 09:00:00',
+     TIMESTAMP '2026-02-04 09:00:00'
+   ),
+   (
+     :'phi_tie_b_id',
+     :'owner_id',
+     :'policy_id',
+     TIMESTAMP '2026-02-03 09:00:00',
+     'Legacy private health claim tied on creation time B',
+     :'phi_tie_fingerprint',
+     TIMESTAMP '2026-02-03 09:00:00',
+     TIMESTAMP '2026-02-03 09:00:00'
   );
 SQL
 
@@ -329,58 +508,135 @@ run_acceptance_step \
   --quiet \
   --set=ON_ERROR_STOP=1 \
   --variable="owner_id=$legacy_owner_id" \
+  --variable="other_user_id=$legacy_other_user_id" \
   --variable="policy_id=$legacy_policy_id" \
+  --variable="other_policy_id=$legacy_other_policy_id" \
   --variable="medicare_first_id=$legacy_medicare_first_id" \
   --variable="medicare_second_id=$legacy_medicare_second_id" \
+  --variable="other_medicare_first_id=$legacy_other_medicare_first_id" \
+  --variable="other_medicare_second_id=$legacy_other_medicare_second_id" \
+  --variable="medicare_tie_a_id=$legacy_medicare_tie_a_id" \
+  --variable="medicare_tie_b_id=$legacy_medicare_tie_b_id" \
   --variable="phi_first_id=$legacy_phi_first_id" \
   --variable="phi_second_id=$legacy_phi_second_id" \
+  --variable="other_phi_first_id=$legacy_other_phi_first_id" \
+  --variable="other_phi_second_id=$legacy_other_phi_second_id" \
+  --variable="phi_tie_a_id=$legacy_phi_tie_a_id" \
+  --variable="phi_tie_b_id=$legacy_phi_tie_b_id" \
   --variable="medicare_fingerprint=$legacy_medicare_fingerprint" \
   --variable="phi_fingerprint=$legacy_phi_fingerprint" \
+   --variable="medicare_tie_fingerprint=$legacy_medicare_tie_fingerprint" \
+   --variable="phi_tie_fingerprint=$legacy_phi_tie_fingerprint" \
   "$DATABASE_URL" <<SQL
 
 DO \$\$
 DECLARE
   medicare_total INTEGER;
+  other_medicare_total INTEGER;
   phi_total INTEGER;
+  other_phi_total INTEGER;
   medicare_owned INTEGER;
+  other_medicare_owned INTEGER;
   phi_owned INTEGER;
+  other_phi_owned INTEGER;
   medicare_first_fingerprint TEXT;
   medicare_second_fingerprint TEXT;
+  other_medicare_first_fingerprint TEXT;
+  other_medicare_second_fingerprint TEXT;
+  medicare_tie_a_fingerprint TEXT;
+  medicare_tie_b_fingerprint TEXT;
   phi_first_fingerprint TEXT;
   phi_second_fingerprint TEXT;
+  other_phi_first_fingerprint TEXT;
+  other_phi_second_fingerprint TEXT;
+  phi_tie_a_fingerprint TEXT;
+  phi_tie_b_fingerprint TEXT;
 BEGIN
   SELECT count(*), count(*) FILTER (WHERE "importFingerprint" IS NOT NULL)
     INTO medicare_total, medicare_owned
     FROM "MedicareClaim"
-   WHERE "id" IN ('$legacy_medicare_first_id', '$legacy_medicare_second_id');
+   WHERE "userId" = '$legacy_owner_id'
+     AND "id" IN ('$legacy_medicare_first_id', '$legacy_medicare_second_id');
+  SELECT count(*), count(*) FILTER (WHERE "importFingerprint" IS NOT NULL)
+    INTO other_medicare_total, other_medicare_owned
+    FROM "MedicareClaim"
+   WHERE "userId" = '$legacy_other_user_id'
+     AND "id" IN ('$legacy_other_medicare_first_id', '$legacy_other_medicare_second_id');
   SELECT count(*), count(*) FILTER (WHERE "importFingerprint" IS NOT NULL)
     INTO phi_total, phi_owned
     FROM "PhiClaim"
-   WHERE "id" IN ('$legacy_phi_first_id', '$legacy_phi_second_id');
+   WHERE "userId" = '$legacy_owner_id'
+     AND "id" IN ('$legacy_phi_first_id', '$legacy_phi_second_id');
+  SELECT count(*), count(*) FILTER (WHERE "importFingerprint" IS NOT NULL)
+    INTO other_phi_total, other_phi_owned
+    FROM "PhiClaim"
+   WHERE "userId" = '$legacy_other_user_id'
+     AND "id" IN ('$legacy_other_phi_first_id', '$legacy_other_phi_second_id');
 
-  IF medicare_total <> 2 OR medicare_owned <> 1 THEN
-    RAISE EXCEPTION 'Medicare historical claims were not preserved with one fingerprint owner';
+  IF medicare_total <> 2 OR medicare_owned <> 1
+     OR other_medicare_total <> 2 OR other_medicare_owned <> 1 THEN
+    RAISE EXCEPTION 'Medicare historical claims were not preserved with one fingerprint owner per user';
   END IF;
-  IF phi_total <> 2 OR phi_owned <> 1 THEN
-    RAISE EXCEPTION 'private-health historical claims were not preserved with one fingerprint owner';
+  IF phi_total <> 2 OR phi_owned <> 1
+     OR other_phi_total <> 2 OR other_phi_owned <> 1 THEN
+    RAISE EXCEPTION 'private-health historical claims were not preserved with one fingerprint owner per user';
   END IF;
 
   SELECT "importFingerprint" INTO medicare_first_fingerprint
     FROM "MedicareClaim" WHERE "id" = '$legacy_medicare_first_id';
   SELECT "importFingerprint" INTO medicare_second_fingerprint
     FROM "MedicareClaim" WHERE "id" = '$legacy_medicare_second_id';
+  SELECT "importFingerprint" INTO other_medicare_first_fingerprint
+    FROM "MedicareClaim" WHERE "id" = '$legacy_other_medicare_first_id';
+  SELECT "importFingerprint" INTO other_medicare_second_fingerprint
+    FROM "MedicareClaim" WHERE "id" = '$legacy_other_medicare_second_id';
   SELECT "importFingerprint" INTO phi_first_fingerprint
     FROM "PhiClaim" WHERE "id" = '$legacy_phi_first_id';
   SELECT "importFingerprint" INTO phi_second_fingerprint
     FROM "PhiClaim" WHERE "id" = '$legacy_phi_second_id';
+  SELECT "importFingerprint" INTO other_phi_first_fingerprint
+    FROM "PhiClaim" WHERE "id" = '$legacy_other_phi_first_id';
+  SELECT "importFingerprint" INTO other_phi_second_fingerprint
+    FROM "PhiClaim" WHERE "id" = '$legacy_other_phi_second_id';
 
   IF medicare_first_fingerprint IS DISTINCT FROM '$legacy_medicare_fingerprint'
-     OR medicare_second_fingerprint IS NOT NULL THEN
-    RAISE EXCEPTION 'Medicare fingerprint ownership was not retained by the earliest claim';
+     OR medicare_second_fingerprint IS NOT NULL
+     OR other_medicare_first_fingerprint IS DISTINCT FROM '$legacy_medicare_fingerprint'
+     OR other_medicare_second_fingerprint IS NOT NULL THEN
+    RAISE EXCEPTION 'Medicare fingerprint ownership was not retained independently per user';
   END IF;
   IF phi_first_fingerprint IS DISTINCT FROM '$legacy_phi_fingerprint'
-     OR phi_second_fingerprint IS NOT NULL THEN
-    RAISE EXCEPTION 'private-health fingerprint ownership was not retained by the earliest claim';
+     OR phi_second_fingerprint IS NOT NULL
+     OR other_phi_first_fingerprint IS DISTINCT FROM '$legacy_phi_fingerprint'
+     OR other_phi_second_fingerprint IS NOT NULL THEN
+    RAISE EXCEPTION 'private-health fingerprint ownership was not retained independently per user';
+  END IF;
+
+  IF (SELECT count(*) FROM "MedicareClaim"
+       WHERE "importFingerprint" = '$legacy_medicare_fingerprint'
+         AND "userId" IN ('$legacy_owner_id', '$legacy_other_user_id')) <> 2
+     OR (SELECT count(*) FROM "PhiClaim"
+       WHERE "importFingerprint" = '$legacy_phi_fingerprint'
+         AND "userId" IN ('$legacy_owner_id', '$legacy_other_user_id')) <> 2 THEN
+    RAISE EXCEPTION 'cross-user claim fingerprints were not accepted by the unique indexes';
+  END IF;
+
+  SELECT "importFingerprint" INTO medicare_tie_a_fingerprint
+    FROM "MedicareClaim" WHERE "id" = '$legacy_medicare_tie_a_id';
+  SELECT "importFingerprint" INTO medicare_tie_b_fingerprint
+    FROM "MedicareClaim" WHERE "id" = '$legacy_medicare_tie_b_id';
+  SELECT "importFingerprint" INTO phi_tie_a_fingerprint
+    FROM "PhiClaim" WHERE "id" = '$legacy_phi_tie_a_id';
+  SELECT "importFingerprint" INTO phi_tie_b_fingerprint
+    FROM "PhiClaim" WHERE "id" = '$legacy_phi_tie_b_id';
+
+  IF medicare_tie_a_fingerprint IS DISTINCT FROM '$legacy_medicare_tie_fingerprint'
+     OR medicare_tie_b_fingerprint IS NOT NULL THEN
+    RAISE EXCEPTION 'Medicare tied fingerprint ownership was not retained by the lowest ID';
+  END IF;
+  IF phi_tie_a_fingerprint IS DISTINCT FROM '$legacy_phi_tie_fingerprint'
+     OR phi_tie_b_fingerprint IS NOT NULL THEN
+    RAISE EXCEPTION 'private-health tied fingerprint ownership was not retained by the lowest ID';
   END IF;
 END
 \$\$;
@@ -410,6 +666,28 @@ BEGIN
   END;
 
   BEGIN
+    INSERT INTO "MedicareClaim" (
+      "id",
+      "userId",
+      "serviceDate",
+      "description",
+      "importFingerprint",
+      "updatedAt"
+    )
+    VALUES (
+      'migration_duplicate_other_medicare_$schema',
+      '$legacy_other_user_id',
+      CURRENT_TIMESTAMP,
+      'Should be rejected',
+      '$legacy_medicare_fingerprint',
+      CURRENT_TIMESTAMP
+    );
+    RAISE EXCEPTION 'Medicare unique index accepted a duplicate fingerprint for the second user';
+  EXCEPTION
+    WHEN unique_violation THEN NULL;
+  END;
+
+  BEGIN
     INSERT INTO "PhiClaim" (
       "id",
       "userId",
@@ -432,6 +710,30 @@ BEGIN
   EXCEPTION
     WHEN unique_violation THEN NULL;
   END;
+
+  BEGIN
+    INSERT INTO "PhiClaim" (
+      "id",
+      "userId",
+      "policyId",
+      "serviceDate",
+      "description",
+      "importFingerprint",
+      "updatedAt"
+    )
+    VALUES (
+      'migration_duplicate_other_phi_$schema',
+      '$legacy_other_user_id',
+      '$legacy_other_policy_id',
+      CURRENT_TIMESTAMP,
+      'Should be rejected',
+      '$legacy_phi_fingerprint',
+      CURRENT_TIMESTAMP
+    );
+    RAISE EXCEPTION 'private-health unique index accepted a duplicate fingerprint for the second user';
+  EXCEPTION
+    WHEN unique_violation THEN NULL;
+  END;
 END
 \$\$;
 SQL
@@ -449,21 +751,54 @@ if [[ "$acceptance_focus" == "price-watches" ]]; then
   run_price_watch_acceptance
   exit 0
 fi
+if [[ "$acceptance_focus" == "storage-labels" ]]; then
+  run_storage_label_acceptance
+  exit 0
+fi
+if [[ "$acceptance_focus" == "appointment-care" ]]; then
+  run_appointment_care_acceptance
+  exit 0
+fi
 if [[ "$acceptance_focus" == "calendar-connections" ]]; then
   run_calendar_connection_acceptance
   exit 0
 fi
+if [[ "$acceptance_focus" == "calendar-routes" ]]; then
+  run_calendar_route_acceptance
+  exit 0
+fi
+if [[ "$acceptance_focus" == "calendar-event-lifecycle" ]]; then
+  run_calendar_event_lifecycle_acceptance
+  exit 0
+fi
+if [[ "$acceptance_focus" == "interpersonal-debts" ]]; then
+  run_interpersonal_debt_acceptance
+  exit 0
+fi
+if [[ "$acceptance_focus" == "pharmacy-refills" ]]; then
+  run_pharmacy_refill_acceptance
+  exit 0
+fi
+if [[ "$acceptance_focus" == "referral-usage" ]]; then
+  run_referral_usage_acceptance
+  exit 0
+fi
+if [[ "$acceptance_focus" == "signup-destination" ]]; then
+  run_signup_destination_acceptance
+  exit 0
+fi
 run_price_watch_acceptance
+run_appointment_care_acceptance
 run_calendar_connection_acceptance
+run_interpersonal_debt_acceptance
+run_pharmacy_refill_acceptance
+run_referral_usage_acceptance
 run_acceptance_step \
   'test' \
   'calendar OAuth database acceptance' \
   env DATABASE_URL="$test_database_url" pnpm exec tsx scripts/calendar-oauth-acceptance.ts
-run_acceptance_step \
-  'test' \
-  'calendar route privacy database acceptance' \
-  env DATABASE_URL="$test_database_url" CALENDAR_ROUTE_DATABASE_TESTS=1 \
-  pnpm exec tsx --test --experimental-test-module-mocks tests/calendar-provider.test.ts
+run_calendar_route_acceptance
+run_calendar_event_lifecycle_acceptance
 run_acceptance_step \
   'test' \
   'calendar worker database acceptance' \
@@ -482,6 +817,7 @@ run_acceptance_step \
   env DATABASE_URL="$test_database_url" PAY_REVIEW_DATABASE_TESTS=1 \
   pnpm exec tsx --test --experimental-test-module-mocks tests/work.test.ts
 run_health_claim_acceptance
+run_signup_destination_acceptance
 run_acceptance_step \
   'test' \
   'recreated-account health dashboard browser acceptance' \
