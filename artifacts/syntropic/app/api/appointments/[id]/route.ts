@@ -6,8 +6,6 @@ import { prisma } from '@/lib/db'
 import { evaluateReferral } from '@/lib/referrals'
 import { finiteNumber, optionalDate, validateAppointmentCareOwnership } from '@/lib/appointment-care'
 
-const num = (v: any) => (v != null && v !== '' ? parseFloat(v) : null)
-
 async function syncReferralUsage(tx: Prisma.TransactionClient, appointmentId: string, userId: string) {
   const appointment = await tx.appointment.findFirst({
     where: { id: appointmentId, userId },
@@ -108,6 +106,8 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
   if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const userId = (session.user as any).id
   const { id } = await params
+  const owned = await prisma.appointment.findFirst({ where: { id, userId }, select: { id: true } })
+  if (!owned) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   await prisma.$transaction(async (tx) => {
     const appointment = await tx.appointment.findFirst({ where: { id, userId }, select: { referralId: true } })
     await tx.referralUsage.updateMany({
