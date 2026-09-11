@@ -9,9 +9,10 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import type { GeneratedStorageLabel, StorageLabelSelection } from '@/hooks/use-storage'
+import { isStorageLabelLayoutId, normalizeStorageLabelLayoutId, STORAGE_LABEL_LAYOUT_IDS, type StorageLabelLayoutId } from '@/lib/storage-label-layout'
 
 type SelectedRecord = StorageLabelSelection & { name: string }
-type LabelLayoutId = 'plain' | 'avery-5160' | 'avery-l7163' | 'avery-l7160'
+type LabelLayoutId = StorageLabelLayoutId
 
 type LabelLayout = {
   id: LabelLayoutId
@@ -126,18 +127,24 @@ export function StorageLabelSheet({
   selected,
   generateLabels,
   preparedLabels,
+  householdId,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   selected: SelectedRecord[]
   generateLabels: (selections: StorageLabelSelection[]) => Promise<GeneratedStorageLabel[]>
   preparedLabels?: GeneratedStorageLabel[] | null
+  householdId: string
 }) {
   const [drafts, setDrafts] = useState<SelectedRecord[]>([])
   const [labels, setLabels] = useState<GeneratedStorageLabel[]>([])
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [layoutId, setLayoutId] = useState<LabelLayoutId>('plain')
+  const [preferenceLoading, setPreferenceLoading] = useState(false)
+  const [preferenceBusy, setPreferenceBusy] = useState(false)
+  const [preferenceError, setPreferenceError] = useState('')
+  const [preferenceSaved, setPreferenceSaved] = useState(false)
 
   const layout = LABEL_LAYOUTS[layoutId]
   const labelPages = splitIntoPages(labels, layout.labelsPerPage)
@@ -160,7 +167,44 @@ export function StorageLabelSheet({
     setDrafts(selected.map((record) => ({ ...record, displayText: record.displayText || record.name })))
     setLabels(preparedLabels ?? [])
     setError('')
-  }, [open, selected, preparedLabels])
+    setPreferenceError('')
+    setPreferenceSaved(false)
+    setPreferenceLoading(true)
+    void (async () => {
+      try {
+        const response = await fetch(`/api/households/${householdId}/storage/label-sheet`)
+        const result = await response.json().catch(() => null)
+        if (!response.ok) throw new Error(result?.error || 'The saved label sheet could not be loaded.')
+        setLayoutId(normalizeStorageLabelLayoutId(result?.layoutId))
+      } catch (cause) {
+        setLayoutId('plain')
+        setPreferenceError(cause instanceof Error ? cause.message : 'The saved label sheet could not be loaded.')
+      } finally {
+        setPreferenceLoading(false)
+      }
+    })()
+  }, [open, selected, preparedLabels, householdId])
+
+  const savePreference = async () => {
+    setPreferenceBusy(true)
+    setPreferenceError('')
+    setPreferenceSaved(false)
+    try {
+      const response = await fetch(`/api/households/${householdId}/storage/label-sheet`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ layoutId }),
+      })
+      const result = await response.json().catch(() => null)
+      if (!response.ok) throw new Error(result?.error || 'The label sheet preference could not be saved.')
+      setLayoutId(normalizeStorageLabelLayoutId(result?.layoutId))
+      setPreferenceSaved(true)
+    } catch (cause) {
+      setPreferenceError(cause instanceof Error ? cause.message : 'The label sheet preference could not be saved.')
+    } finally {
+      setPreferenceBusy(false)
+    }
+  }
 
   const prepare = async () => {
     setError('')
@@ -215,19 +259,33 @@ export function StorageLabelSheet({
             </p>
             <div className="space-y-2">
               <Label htmlFor="label-layout">Label sheet</Label>
-              <Select value={layoutId} onValueChange={(value) => setLayoutId(value as LabelLayoutId)} disabled={busy}>
-                <SelectTrigger id="label-layout">
-                  <SelectValue placeholder="Choose a label sheet" />
-                </SelectTrigger>
-                <SelectContent>
-                  {Object.values(LABEL_LAYOUTS).map((option) => (
-                    <SelectItem value={option.id} key={option.id}>
-                      {option.name} — {option.description}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Select value={layoutId} onValueChange={(value) => {
+                  if (isStorageLabelLayoutId(value)) {
+                    setLayoutId(value)
+                    setPreferenceSaved(false)
+                  }
+                }} disabled={busy || preferenceBusy}>
+                  <SelectTrigger id="label-layout">
+                    <SelectValue placeholder="Choose a label sheet" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {STORAGE_LABEL_LAYOUT_IDS.map((id) => {
+                      const option = LABEL_LAYOUTS[id]
+                      return (
+                        <SelectItem value={option.id} key={option.id}>
+                          {option.name} — {option.description}
+                        </SelectItem>
+                      )
+                    })}
+                  </SelectContent>
+                </Select>
+                <Button type="button" variant="outline" onClick={savePreference} disabled={busy || preferenceBusy}>
+                  {preferenceBusy ? 'Saving…' : preferenceSaved ? 'Saved for household' : 'Save as household default'}
+                </Button>
+              </div>
               <p className="text-xs text-muted-foreground">{layout.description}. The preview uses the sheet's real physical dimensions.</p>
+              {preferenceError && <p role="alert" className="text-xs text-destructive">{preferenceError}</p>}
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               {drafts.map((record, index) => (
@@ -283,11 +341,11 @@ export function StorageLabelSheet({
         <DialogFooter className="print:hidden">
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           {!labels.length ? (
-            <Button disabled={busy || !drafts.length} onClick={prepare}>{busy ? 'Preparing…' : 'Prepare sheet'}</Button>
+            <Button disabled={busy || preferenceLoading || !drafts.length} onClick={prepare}>{preferenceLoading ? 'Loading saved sheet…' : busy ? 'Preparing…' : 'Prepare sheet'}</Button>
           ) : (
             <>
-              <Button variant="outline" disabled={busy} onClick={() => setLabels([])}>Edit text or sheet</Button>
-              <Button disabled={busy} onClick={print}><Printer className="mr-2 h-4 w-4" />{busy ? 'Checking…' : 'Check & print'}</Button>
+              <Button variant="outline" disabled={busy || preferenceLoading} onClick={() => setLabels([])}>Edit text or sheet</Button>
+              <Button disabled={busy || preferenceLoading} onClick={print}><Printer className="mr-2 h-4 w-4" />{busy ? 'Checking…' : 'Check & print'}</Button>
             </>
           )}
         </DialogFooter>
