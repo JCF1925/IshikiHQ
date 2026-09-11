@@ -97,7 +97,8 @@ timestamp and random attempt ID, creates the resulting file without
 overwriting, writes it with mode 0600 even when the check fails, and prints
 only its privacy-safe path. The release owner retains every attempt in that
 directory for the same approved retention period as the release record,
-records each exact path and pass/fail decision, and links the accepted attempt
+records each exact path, pass/fail decision, and SHA-256 content digest, and
+links the accepted attempt
 with the release ID, reviewer, and commit beside the corresponding checklist
 item. This preserves blocked and retried attempts while keeping the decision
 traceable without granting reviewers access to Google credentials or user
@@ -112,13 +113,15 @@ exceptions.
 Before release approval, `test:auth-google:evidence-release` validates the
 mode-0600 release record at
 `<release-id>/google-auth-staging-release-record.json`. The record contains
-only the selected accepted attempt path and every retained attempt path with a
-`passed` or `failed` status. The check requires the accepted attempt to be
-listed, present in the current release directory, marked `passed`, and backed
-by both redacted passing assertions; it also rejects any retained attempt that
-is missing from the record. Failure output contains only safe paths, statuses,
-and aggregate error counts, never provider URLs, tokens, account details, or
-raw browser output.
+only the selected accepted attempt path and approved digest, plus every retained
+attempt path, status, and SHA-256 content digest. The check requires every
+listed digest to match the current mode-0600 file, rejects duplicate content
+under different paths, and requires the accepted attempt's digest and `passed`
+status to match the approved metadata and both redacted passing assertions. It
+also rejects any retained attempt that is missing from the record. Failure
+output contains only safe paths, statuses, and aggregate error counts, never
+provider URLs, tokens, account details, evidence contents, or raw browser
+output.
 
 ## Medication stock acceptance evidence
 
