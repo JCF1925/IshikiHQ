@@ -1,5 +1,6 @@
 export const explicitlyEnvironmentDependentTests = new Set([
   'calendar-worker.test.ts',
+  'referral-usage-database.test.ts',
 ])
 
 export function environmentDependencyFor(fileName) {
