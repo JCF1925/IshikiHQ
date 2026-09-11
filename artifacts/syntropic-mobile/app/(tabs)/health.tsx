@@ -7,10 +7,11 @@ import {
   importAppleHealthBatch,
   updateAppleHealthControls,
   updateAppleHealthImportedCopyControls,
+  useGetMobileMedicationHistory,
   useListMobileAnomalies,
   useReviewMobileAnomaly,
 } from '@workspace/api-client-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Platform,
@@ -23,6 +24,8 @@ import {
 } from 'react-native';
 import { Button, Card, Field, Pill, type } from '@/components/ui';
 import { useColors } from '@/hooks/useColors';
+import { healthStateStorageKey } from '@/lib/health-state';
+import { useApp } from '@/providers/AppProvider';
 import {
   getHealthAdapter,
   type HealthAuthorization,
@@ -30,18 +33,17 @@ import {
 } from '@/lib/health';
 import {
   healthKitSmokeTypes,
-  importHealthKitWithRecovery,
+  importHealthKitTypesWithRecovery,
   runHealthKitSmokeTest,
   type HealthKitSmokeResult,
 } from '@/lib/health-smoke';
 
-const STATE_KEY = 'syntropic.apple-health-state.v1';
-const stateGet = () => Platform.OS === 'web'
-  ? AsyncStorage.getItem(STATE_KEY)
-  : SecureStore.getItemAsync(STATE_KEY);
-const stateSet = (value: string) => Platform.OS === 'web'
-  ? AsyncStorage.setItem(STATE_KEY, value)
-  : SecureStore.setItemAsync(STATE_KEY, value);
+const stateGet = (key: string) => Platform.OS === 'web'
+  ? AsyncStorage.getItem(key)
+  : SecureStore.getItemAsync(key);
+const stateSet = (key: string, value: string) => Platform.OS === 'web'
+  ? AsyncStorage.setItem(key, value)
+  : SecureStore.setItemAsync(key, value);
 const healthTypes: { type: HealthType; label: string; detail: string }[] = [
   { type: 'cardiovascular', label: 'Cardiovascular', detail: 'Heart rate and rhythm' },
   { type: 'blood_pressure', label: 'Blood pressure', detail: 'Systolic and diastolic' },
@@ -64,7 +66,7 @@ type HealthState = {
   lastSuccessfulSyncAt: Partial<Record<HealthType, string>>;
 };
 
-const initialState: HealthState = {
+const createInitialState = (): HealthState => ({
   selected: [],
   authorizations: {},
   anchors: {},
@@ -73,7 +75,7 @@ const initialState: HealthState = {
   excluded: {},
   importedCounts: {},
   lastSuccessfulSyncAt: {},
-};
+});
 
 function formatLastSuccessfulSync(timestamp?: string): string {
   if (!timestamp) return 'Not synced yet';
@@ -98,35 +100,57 @@ function evidenceText(evidence: Record<string, unknown>): string {
     : `Source: ${source}. Review the source record and surrounding trend.`;
 }
 
+function formatMedicationHistoryDate(timestamp: string): string {
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime())
+    ? timestamp
+    : date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
+
 export default function HealthScreen() {
   const c = useColors();
+  const { email, session } = useApp();
   const adapter = useMemo(getHealthAdapter, []);
+  const storageKey = session && email ? healthStateStorageKey(email) : null;
+  const storageKeyRef = useRef<string | null>(storageKey);
+  storageKeyRef.current = storageKey;
   const [availability, setAvailability] = useState<{ available: boolean; reason?: string }>({ available: false });
-  const [healthState, setHealthState] = useState<HealthState>(initialState);
+  const [healthState, setHealthState] = useState<HealthState>(createInitialState);
   const [controlType, setControlType] = useState<HealthType>('cardiovascular');
   const [busy, setBusy] = useState(false);
   const [smokeResults, setSmokeResults] = useState<HealthKitSmokeResult[]>([]);
   const [message, setMessage] = useState('');
   const anomalies = useListMobileAnomalies();
   const review = useReviewMobileAnomaly();
+  const medicationHistory = useGetMobileMedicationHistory({
+    query: { queryKey: ['mobile-medication-history'], enabled: session, staleTime: 30_000 },
+  });
 
-  const saveState = (next: HealthState) => {
+  const saveState = (next: HealthState, expectedStorageKey = storageKey) => {
+    if (!expectedStorageKey || storageKeyRef.current !== expectedStorageKey) return;
     setHealthState(next);
-    void stateSet(JSON.stringify(next));
+    void stateSet(expectedStorageKey, JSON.stringify(next));
   };
 
   useEffect(() => {
-    void Promise.all([adapter.availability(), stateGet()])
+    let cancelled = false;
+    setHealthState(createInitialState());
+    setControlType('cardiovascular');
+    void Promise.all([adapter.availability(), storageKey ? stateGet(storageKey) : Promise.resolve(null)])
       .then(([nextAvailability, stored]) => {
+        if (cancelled) return;
         setAvailability(nextAvailability);
         if (stored) {
           const restored = JSON.parse(stored) as HealthState;
-          setHealthState({ ...initialState, ...restored });
+          setHealthState({ ...createInitialState(), ...restored });
           if (restored.selected[0]) setControlType(restored.selected[0]);
         }
       })
       .catch(() => setMessage('Health controls could not be restored.'));
-  }, [adapter]);
+    return () => {
+      cancelled = true;
+    };
+  }, [adapter, storageKey]);
 
   const toggleSelected = (sampleType: HealthType) => {
     const selected = healthState.selected.includes(sampleType)
@@ -138,6 +162,7 @@ export default function HealthScreen() {
 
   const connect = async () => {
     if (!availability.available || healthState.selected.length === 0) return;
+    const expectedStorageKey = storageKey;
     setBusy(true);
     setMessage('');
     try {
@@ -152,9 +177,9 @@ export default function HealthScreen() {
       const anchors = { ...healthState.anchors };
       const importedCounts = { ...healthState.importedCounts };
       const lastSuccessfulSyncAt = { ...healthState.lastSuccessfulSyncAt };
-      const failures: Array<{ sampleType: HealthType; message: string }> = [];
-      for (const sampleType of allowed) {
-        if (healthState.paused[sampleType]) continue;
+      const typesToImport = allowed.filter((sampleType) => !healthState.paused[sampleType]);
+      const previousAnchors: Partial<Record<HealthType, string>> = {};
+      for (const sampleType of typesToImport) {
         let previousAnchor = anchors[sampleType];
         if (!previousAnchor) {
           try {
@@ -163,42 +188,38 @@ export default function HealthScreen() {
             previousAnchor = undefined;
           }
         }
-        try {
-          const result = await importHealthKitWithRecovery(
-            adapter,
+        if (previousAnchor) previousAnchors[sampleType] = previousAnchor;
+      }
+      const { completed, failures } = await importHealthKitTypesWithRecovery(
+        adapter,
+        typesToImport,
+        previousAnchors,
+        async ({ type: sampleType, previousAnchor, result: recovered }) => {
+          await importAppleHealthBatch({
             sampleType,
             previousAnchor,
-            async ({ previousAnchor: committedPreviousAnchor, result: recovered }) => {
-              await importAppleHealthBatch({
-                sampleType,
-                previousAnchor: committedPreviousAnchor,
-                anchor: recovered.anchor,
-                samples: recovered.samples.map((sample) => ({
-                  healthKitUuid: sample.id,
-                  sampleType,
-                  value: sample.value,
-                  unit: sample.unit,
-                  startAt: sample.startDate,
-                  endAt: sample.endDate,
-                  sourceBundleId: sample.source,
-                  sourceRevision: sample.sourceRevision,
-                  metadata: {},
-                })),
-                deletions: recovered.deletions.map((deletion) => ({ ...deletion, sampleType })),
-              }, {
-                headers: { 'Idempotency-Key': `health-import:${sampleType}:${recovered.anchor}`.slice(0, 200) },
-              });
-            },
-          );
-          anchors[sampleType] = result.anchor;
-          importedCounts[sampleType] = (importedCounts[sampleType] ?? 0) + result.samples.length;
-          lastSuccessfulSyncAt[sampleType] = new Date().toISOString();
-        } catch (error) {
-          failures.push({
-            sampleType,
-            message: error instanceof Error ? error.message : 'HealthKit import failed',
+            anchor: recovered.anchor,
+            samples: recovered.samples.map((sample) => ({
+              healthKitUuid: sample.id,
+              sampleType,
+              value: sample.value,
+              unit: sample.unit,
+              startAt: sample.startDate,
+              endAt: sample.endDate,
+              sourceBundleId: sample.source,
+              sourceRevision: sample.sourceRevision,
+              metadata: sample.metadata ?? {},
+            })),
+            deletions: recovered.deletions.map((deletion) => ({ ...deletion, sampleType })),
+          }, {
+            headers: { 'Idempotency-Key': `health-import:${sampleType}:${recovered.anchor}`.slice(0, 200) },
           });
-        }
+        },
+      );
+      for (const { type: sampleType, result } of completed) {
+        anchors[sampleType] = result.anchor;
+        importedCounts[sampleType] = (importedCounts[sampleType] ?? 0) + result.samples.length;
+        lastSuccessfulSyncAt[sampleType] = new Date().toISOString();
       }
       saveState({
         ...healthState,
@@ -206,10 +227,10 @@ export default function HealthScreen() {
         anchors,
         importedCounts,
         lastSuccessfulSyncAt,
-      });
+      }, expectedStorageKey);
       const denied = healthState.selected.length - allowed.length;
       setMessage(failures.length
-        ? `${failures.map(({ sampleType }) => sampleType.replaceAll('_', ' ')).join(', ')} could not be imported after retry; the previous server anchor was kept.`
+        ? `${failures.map(({ type: sampleType }) => sampleType.replaceAll('_', ' ')).join(', ')} could not be imported after retry; the previous server anchor was kept.`
         : denied
           ? `Imported authorized types. ${denied} denied type${denied === 1 ? '' : 's'} stayed disconnected.`
           : 'Authorized health types are up to date.');
@@ -242,6 +263,7 @@ export default function HealthScreen() {
     paused: boolean;
     disconnected: boolean;
   }>) => {
+    const expectedStorageKey = storageKey;
     const control = {
       sampleType: controlType,
       annotation: healthState.annotations[controlType] ?? null,
@@ -266,7 +288,7 @@ export default function HealthScreen() {
       delete next.anchors[controlType];
       next.authorizations[controlType] = 'denied';
     }
-    saveState(next);
+    saveState(next, expectedStorageKey);
   };
 
   const deleteCopies = () => Alert.alert(
@@ -281,11 +303,12 @@ export default function HealthScreen() {
           sampleType: controlType,
           reason: 'Deleted by the user from mobile controls',
         }).then(() => {
+          const expectedStorageKey = storageKey;
           saveState({
             ...healthState,
             importedCounts: { ...healthState.importedCounts, [controlType]: 0 },
             paused: { ...healthState.paused, [controlType]: true },
-          });
+          }, expectedStorageKey);
           setMessage('Imported copies deleted. Apple Health was not changed.');
         }).catch((error: unknown) => {
           setMessage(error instanceof Error ? error.message : 'Imported copies could not be deleted.');
@@ -318,6 +341,32 @@ export default function HealthScreen() {
           <Text style={[type.body, { color: c.accentForeground }]}>{availability.reason}</Text>
         </Card>
       ) : null}
+      <Card>
+        <View style={styles.row}>
+          <Text style={[type.section, { color: c.foreground }]}>Medication history</Text>
+          <Pill text={`${medicationHistory.data?.entries.length ?? 0} entries`} />
+        </View>
+        <Text style={[type.meta, { color: c.mutedForeground }]}>
+          Scheduled and PRN doses recorded on your account.
+        </Text>
+        {medicationHistory.isLoading ? (
+          <Text style={[type.meta, { color: c.mutedForeground }]}>Loading medication history…</Text>
+        ) : medicationHistory.isError ? (
+          <Text style={[type.meta, { color: c.destructive }]}>Medication history could not be loaded.</Text>
+        ) : medicationHistory.data?.entries.length ? medicationHistory.data.entries.map((entry) => (
+          <View key={entry.id} style={[styles.historyEntry, { borderTopColor: c.border }]}>
+            <View style={styles.row}>
+              <Text style={[styles.label, { color: c.foreground, flex: 1 }]}>{entry.medicationLabel}</Text>
+              <Pill text={entry.kind === 'scheduled' ? 'Scheduled' : 'Unscheduled / PRN'} />
+            </View>
+            <Text style={[type.meta, { color: c.mutedForeground }]}>
+              {formatMedicationHistoryDate(entry.takenAt)} · {entry.status === 'taken' ? `Taken${entry.dose ? ` · ${entry.dose}` : ''}` : `Skipped${entry.skipReason ? ` · ${entry.skipReason}` : ''}`}
+            </Text>
+          </View>
+        )) : (
+          <Text style={[type.meta, { color: c.mutedForeground }]}>No medication doses recorded yet.</Text>
+        )}
+      </Card>
       <Card>
         <Text style={[type.section, { color: c.foreground }]}>Data permissions</Text>
         {healthTypes.map((item) => {
@@ -362,26 +411,33 @@ export default function HealthScreen() {
             onPress={() => void runDevelopmentSmokeTest()}
           />
           {smokeResults.map((result) => (
-            <View key={result.type} style={styles.smokeRow}>
-              <Text style={[type.meta, { color: c.foreground, flex: 1 }]}>
-                {result.type}: {result.authorization}
-              </Text>
-              <Text style={[type.meta, {
-                color: result.error
-                  || (result.authorization === 'authorized' && (!result.anchoredRead || (result.smokeSampleInserted && !result.sampleDeltaPassed)))
-                  ? c.destructive
-                  : c.mutedForeground,
-              }]}>
-                {result.error ?? (result.authorization === 'authorized'
-                  ? (result.anchoredRead
-                    ? (result.smokeSampleInserted
-                      ? (result.sampleDeltaPassed
-                        ? `sample delta passed (${result.observedSampleDelta}/${result.expectedSampleDelta})`
-                        : `sample delta failed (${result.observedSampleDelta}/${result.expectedSampleDelta})`)
-                      : (result.recovered ? 'anchored read recovered after retry' : 'anchored read passed'))
-                    : 'anchor missing')
-                  : 'read skipped')}
-              </Text>
+            <View key={result.type} style={styles.smokeResult}>
+              <View style={styles.smokeRow}>
+                <Text style={[type.meta, { color: c.foreground, flex: 1 }]}>
+                  {result.type}: {result.authorization}
+                </Text>
+                <Text style={[type.meta, {
+                  color: result.error
+                    || (result.authorization === 'authorized' && (!result.anchoredRead || (result.smokeSampleInserted && !result.sampleDeltaPassed)))
+                    ? c.destructive
+                    : c.mutedForeground,
+                }]}>
+                  {result.error ?? (result.authorization === 'authorized'
+                    ? (result.anchoredRead
+                      ? (result.smokeSampleInserted
+                        ? (result.sampleDeltaPassed
+                          ? `sample delta passed (${result.observedSampleDelta}/${result.expectedSampleDelta})`
+                          : `sample delta failed (${result.observedSampleDelta}/${result.expectedSampleDelta})`)
+                        : (result.recovered ? 'anchored read recovered after retry' : 'anchored read passed'))
+                      : 'anchor missing')
+                    : 'read skipped')}
+                </Text>
+              </View>
+              {result.cleanupWarning ? (
+                <Text accessibilityLiveRegion="polite" style={[type.meta, { color: c.accentForeground }]}>
+                  Warning: {result.cleanupWarning}
+                </Text>
+              ) : null}
             </View>
           ))}
         </Card>
@@ -490,9 +546,11 @@ const styles = StyleSheet.create({
   permission: { minHeight: 56, flexDirection: 'row', alignItems: 'center', borderBottomWidth: StyleSheet.hairlineWidth },
   label: { fontFamily: 'Inter_600SemiBold', fontSize: 15 },
   anchor: { padding: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  smokeResult: { gap: 4 },
   smokeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
   chips: { gap: 8 },
   chip: { paddingHorizontal: 12, paddingVertical: 9 },
   review: { gap: 7, paddingVertical: 10 },
   reviewActions: { gap: 8 },
+  historyEntry: { gap: 5, paddingTop: 12, marginTop: 4, borderTopWidth: StyleSheet.hairlineWidth },
 });
