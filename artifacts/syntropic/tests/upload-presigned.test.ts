@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { presignedUploadSchema } from '../lib/validation.ts'
+import { presignedUploadSchema, receiptAttachSchema } from '../lib/validation.ts'
 
 const validUpload = {
   fileName: 'report.pdf',
@@ -21,5 +21,11 @@ describe('presigned upload safety', () => {
     assert.equal(presignedUploadSchema.safeParse({ ...validUpload, isPublic: true }).success, false)
     assert.equal(presignedUploadSchema.safeParse({ ...validUpload, fileName: '../public.html' }).success, false)
     assert.equal(presignedUploadSchema.safeParse({ ...validUpload, fileName: 'nested/report.pdf' }).success, false)
+  })
+
+  it('requires an upload id when attaching a prepared receipt', () => {
+    assert.equal(receiptAttachSchema.safeParse({ uploadId: 'upload-1' }).success, true)
+    assert.equal(receiptAttachSchema.safeParse({ uploadId: '' }).success, false)
+    assert.equal(receiptAttachSchema.safeParse({ uploadId: 'upload-1', extra: true }).success, false)
   })
 })
